@@ -1,0 +1,17 @@
+interface ProofreadingSectionProps {
+  transcriptionResult?: TranscriptionResult | null
+  apiKeys: ApiKeys
+  aiPreferences: AIPreferences
+  proofreadingResult: ProofreadingResult | null
+  setProofreadingResult: (result: ProofreadingResult | null) => void
+  navigatedFromTranscription?: boolean
+}
+
+export default function ProofreadingSection({
+  transcriptionResult,
+  apiKeys,
+  aiPreferences,
+  proofreadingResult,
+  setProofreadingResult,
+  navigatedFromTranscription = false,
+}: ProofreadingSectionProps) {
