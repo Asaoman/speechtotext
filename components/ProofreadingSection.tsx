@@ -2,10 +2,11 @@
 
 import { useState, useEffect } from 'react'
 import { ApiKeys, ProofreadingResult, AIPreferences, TranscriptionResult } from '@/lib/types'
-import { downloadFile, generateTimestamp } from '@/lib/utils'
+import { downloadFile, generateTimestamp, splitTextIntoChunks } from '@/lib/utils'
 import ProperNounsModalMinimal from './ProperNounsModalMinimal'
 import ProjectSelectorCard from './common/ProjectSelectorCard'
 import FileUploadSection from './common/FileUploadSection'
+import ProgressBar from './common/ProgressBar'
 import { useProject } from '@/hooks/useProject'
 
 interface ProofreadingSectionProps {
@@ -42,6 +43,10 @@ export default function ProofreadingSection({
   const [fileUploadError, setFileUploadError] = useState('')
   const [showProperNounsModal, setShowProperNounsModal] = useState(false)
 
+  // チャンク処理用の進捗管理
+  const [processingProgress, setProcessingProgress] = useState({ current: 0, total: 0 })
+  const [isChunkedProcessing, setIsChunkedProcessing] = useState(false)
+
   // プロジェクト管理（カスタムフック）
   const {
     projects,
@@ -61,6 +66,46 @@ export default function ProofreadingSection({
     setOriginalText(text)
   }
 
+  // 単一チャンクの校正処理
+  const proofreadSingleChunk = async (text: string): Promise<string> => {
+    const apiKey = service === 'openai' ? apiKeys.openai : service === 'claude' ? apiKeys.claude : apiKeys.gemini
+
+    const response = await fetch('/api/proofread', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        text,
+        service,
+        model,
+        language,
+        includeProperNouns,
+        customContext: customContext.trim(),
+        apiKey,
+      }),
+    })
+
+    if (!response.ok) {
+      // レスポンスがJSONでない場合（HTMLエラーページなど）を処理
+      const contentType = response.headers.get('content-type')
+      if (contentType && contentType.includes('application/json')) {
+        const errorData = await response.json()
+        throw new Error(errorData.error || '校正に失敗しました')
+      } else {
+        // HTMLエラーページの場合
+        const text = await response.text()
+        if (text.includes('Request Entity Too Large') || text.includes('413')) {
+          throw new Error('チャンクが大きすぎます')
+        }
+        throw new Error(`校正に失敗しました (HTTP ${response.status})`)
+      }
+    }
+
+    const result = await response.json()
+    return result.corrected_text || text
+  }
+
   const handleProofread = async () => {
     const apiKey = service === 'openai' ? apiKeys.openai : service === 'claude' ? apiKeys.claude : apiKeys.gemini
     if (!apiKey) {
@@ -75,37 +120,75 @@ export default function ProofreadingSection({
 
     setIsProofreading(true)
     setError('')
+    setIsChunkedProcessing(false)
 
     try {
-      // 校正タブではsegmentsやwordsを渡さず、純粋なテキスト校正のみを行う
-      const response = await fetch('/api/proofread', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          text: originalText,
-          service,
-          model,
-          language,
-          includeProperNouns,
-          customContext: customContext.trim(),
-          apiKey,
-        }),
-      })
-
-      if (!response.ok) {
-        const errorData = await response.json()
-        throw new Error(errorData.error || '校正に失敗しました')
+      // 追加ペイロードを定義
+      const additionalPayload = {
+        service,
+        model,
+        language,
+        includeProperNouns,
+        customContext: customContext.trim(),
+        apiKey,
       }
 
-      const result = await response.json()
-      setProofreadingResult(result)
-      setLeftTab('result')
+      // テキストをチャンクに分割
+      const chunks = splitTextIntoChunks(originalText, 3.5 * 1024 * 1024, additionalPayload)
+
+      console.log(`テキストを${chunks.length}個のチャンクに分割しました`)
+
+      // チャンクが1つだけの場合は通常処理
+      if (chunks.length === 1) {
+        const correctedText = await proofreadSingleChunk(originalText)
+        setProofreadingResult({
+          success: true,
+          corrected_text: correctedText,
+          changes: [],
+          suggestions: [],
+          service,
+          model,
+        })
+        setLeftTab('result')
+      } else {
+        // 複数チャンクの場合はチャンク処理
+        setIsChunkedProcessing(true)
+        setProcessingProgress({ current: 0, total: chunks.length })
+
+        const correctedChunks: string[] = []
+
+        for (let i = 0; i < chunks.length; i++) {
+          setProcessingProgress({ current: i + 1, total: chunks.length })
+
+          const correctedText = await proofreadSingleChunk(chunks[i].text)
+          correctedChunks.push(correctedText)
+
+          // 少し待機（APIレート制限対策）
+          if (i < chunks.length - 1) {
+            await new Promise(resolve => setTimeout(resolve, 500))
+          }
+        }
+
+        // チャンクを結合
+        const finalText = correctedChunks.join('\n\n')
+
+        setProofreadingResult({
+          success: true,
+          corrected_text: finalText,
+          changes: [],
+          suggestions: [],
+          service,
+          model,
+        })
+        setLeftTab('result')
+        setIsChunkedProcessing(false)
+      }
     } catch (err: any) {
       setError(err.message || '校正中にエラーが発生しました')
+      setIsChunkedProcessing(false)
     } finally {
       setIsProofreading(false)
+      setProcessingProgress({ current: 0, total: 0 })
     }
   }
 
@@ -241,13 +324,24 @@ export default function ProofreadingSection({
         </p>
       )}
 
+      {/* 進捗バー（チャンク処理中のみ表示） */}
+      {isChunkedProcessing && processingProgress.total > 0 && (
+        <div className="card" style={{ padding: '0' }}>
+          <ProgressBar
+            current={processingProgress.current}
+            total={processingProgress.total}
+            label="大きなテキストを分割処理中..."
+          />
+        </div>
+      )}
+
       <button
         onClick={handleProofread}
         disabled={!canProofread || isProofreading || !originalText.trim()}
         className="btn-primary"
         style={{ width: '100%', padding: '0.75rem', fontSize: '12px' }}
       >
-        {isProofreading ? '校正中...' : '校正'}
+        {isProofreading ? (isChunkedProcessing ? `校正中 (${processingProgress.current}/${processingProgress.total})...` : '校正中...') : '校正'}
       </button>
 
       {proofreadingResult && proofreadingResult.success && (

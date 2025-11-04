@@ -85,6 +85,99 @@ export function generateTimestamp(): string {
   return now.toISOString().replace(/[:.]/g, '-').slice(0, -5);
 }
 
+// テキストをチャンクに分割する関数（意味のある単位で分割）
+export interface TextChunk {
+  text: string;
+  index: number;
+}
+
+export function splitTextIntoChunks(
+  text: string,
+  maxPayloadSize: number = 3.5 * 1024 * 1024, // 3.5MB（4MBより少し余裕を持たせる）
+  additionalPayload: any = {}
+): TextChunk[] {
+  // 追加ペイロード（APIキー、設定など）のサイズを計算
+  const additionalSize = new Blob([JSON.stringify(additionalPayload)]).size;
+  const maxTextSize = maxPayloadSize - additionalSize - 1000; // 1000バイトはJSON構造のための余裕
+
+  // テキストが小さい場合はそのまま返す
+  const estimatedSize = new Blob([text]).size;
+  if (estimatedSize <= maxTextSize) {
+    return [{ text, index: 0 }];
+  }
+
+  const chunks: TextChunk[] = [];
+
+  // 段落で分割（日本語と英語の両方に対応）
+  const paragraphs = text.split(/\n\n+/);
+
+  let currentChunk = '';
+  let chunkIndex = 0;
+
+  for (const paragraph of paragraphs) {
+    const paragraphWithNewline = currentChunk ? '\n\n' + paragraph : paragraph;
+    const testChunk = currentChunk + paragraphWithNewline;
+    const testSize = new Blob([testChunk]).size;
+
+    if (testSize > maxTextSize && currentChunk) {
+      // 現在のチャンクを保存
+      chunks.push({ text: currentChunk.trim(), index: chunkIndex });
+      chunkIndex++;
+      currentChunk = paragraph;
+    } else {
+      currentChunk = testChunk;
+    }
+
+    // 単一の段落が大きすぎる場合は文単位で分割
+    if (new Blob([currentChunk]).size > maxTextSize) {
+      const sentences = splitIntoSentences(currentChunk);
+      currentChunk = '';
+
+      for (const sentence of sentences) {
+        const sentenceWithSpace = currentChunk ? ' ' + sentence : sentence;
+        const testChunk = currentChunk + sentenceWithSpace;
+        const testSize = new Blob([testChunk]).size;
+
+        if (testSize > maxTextSize && currentChunk) {
+          chunks.push({ text: currentChunk.trim(), index: chunkIndex });
+          chunkIndex++;
+          currentChunk = sentence;
+        } else {
+          currentChunk = testChunk;
+        }
+      }
+    }
+  }
+
+  // 最後のチャンクを追加
+  if (currentChunk.trim()) {
+    chunks.push({ text: currentChunk.trim(), index: chunkIndex });
+  }
+
+  return chunks;
+}
+
+// 文に分割する補助関数
+function splitIntoSentences(text: string): string[] {
+  // 日本語と英語の句読点で分割
+  const sentences: string[] = [];
+  const regex = /([^。！？\.!\?]+[。！？\.!\?]+)/g;
+  let match;
+  let lastIndex = 0;
+
+  while ((match = regex.exec(text)) !== null) {
+    sentences.push(match[0]);
+    lastIndex = regex.lastIndex;
+  }
+
+  // 残りのテキストを追加
+  if (lastIndex < text.length) {
+    sentences.push(text.substring(lastIndex));
+  }
+
+  return sentences.length > 0 ? sentences : [text];
+}
+
 // デフォルト字幕設定（ガイドライン基準）
 export const DEFAULT_SUBTITLE_SETTINGS: SubtitleSettings = {
   currentLanguage: 'en',

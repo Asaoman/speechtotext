@@ -116,8 +116,19 @@ export default function FileUpload({
       })
 
       if (!response.ok) {
-        const errorData = await response.json()
-        throw new Error(errorData.error || '文字起こしに失敗しました')
+        // レスポンスがJSONでない場合（HTMLエラーページなど）を処理
+        const contentType = response.headers.get('content-type')
+        if (contentType && contentType.includes('application/json')) {
+          const errorData = await response.json()
+          throw new Error(errorData.error || '文字起こしに失敗しました')
+        } else {
+          // HTMLエラーページの場合
+          const text = await response.text()
+          if (text.includes('Request Entity Too Large') || text.includes('413')) {
+            throw new Error('ファイルが大きすぎます。より小さいファイルを選択してください')
+          }
+          throw new Error(`文字起こしに失敗しました (HTTP ${response.status})`)
+        }
       }
 
       const result = await response.json()

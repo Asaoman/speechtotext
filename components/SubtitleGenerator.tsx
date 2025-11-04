@@ -299,8 +299,19 @@ export default function SubtitleGenerator({ transcriptionResult, subtitleSetting
       })
 
       if (!response.ok) {
-        const errorData = await response.json()
-        throw new Error(errorData.error || '字幕生成に失敗しました')
+        // レスポンスがJSONでない場合（HTMLエラーページなど）を処理
+        const contentType = response.headers.get('content-type')
+        if (contentType && contentType.includes('application/json')) {
+          const errorData = await response.json()
+          throw new Error(errorData.error || '字幕生成に失敗しました')
+        } else {
+          // HTMLエラーページの場合
+          const text = await response.text()
+          if (text.includes('Request Entity Too Large') || text.includes('413')) {
+            throw new Error('データが大きすぎます。テキストを分割して送信してください（制限: 約4MB）')
+          }
+          throw new Error(`字幕生成に失敗しました (HTTP ${response.status})`)
+        }
       }
 
       const data = await response.json()

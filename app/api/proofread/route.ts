@@ -6,6 +6,9 @@ import { GoogleGenerativeAI } from '@google/generative-ai'
 export const runtime = 'nodejs'
 export const maxDuration = 60
 
+// ペイロードサイズの制限を増やす（Vercelでは最大4.5MB、それ以上は別の方法が必要）
+export const dynamic = 'force-dynamic'
+
 interface TranscriptionSegment {
   start: number
   end: number
