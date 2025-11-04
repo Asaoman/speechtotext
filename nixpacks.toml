@@ -1,0 +1,14 @@
+[phases.setup]
+nixPkgs = ["nodejs_20", "python311", "ffmpeg"]
+
+[phases.install]
+cmds = ["npm install"]
+
+[phases.build]
+cmds = ["npm run build"]
+
+[start]
+cmd = "npm start"
+
+[env]
+NODE_ENV = "production"
