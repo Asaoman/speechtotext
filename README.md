@@ -22,11 +22,24 @@ AI搭載の音声文字起こし・校正アプリケーション。Vercelでホ
 - カテゴリ別管理
 - インポート/エクスポート機能
 
+### 🎭 映画字幕翻訳機能（新機能）
+- **プロレベルの字幕翻訳**: 配信サービス・劇場公開レベルの高品質な字幕生成
+- **キャラクター別翻訳**: 各キャラクターの個性・話し方を徹底的に反映した翻訳
+- **包括的ペルソナ抽出**: 脚本からキャラクターの性格・背景・話し方の特徴を自動抽出
+- **話者マッピング自動化**: 音声データと脚本データを総合的に分析して話者IDとキャラクターを自動マッピング
+- **脚本分析**: PDF/テキスト形式の脚本をアップロードして、作品設定・キャラクター情報を自動抽出
+- **音声書き起こし統合**: ElevenLabs Scribe APIを使用した高精度な話者分離
+- **字幕タイミング検証**: Netflix等の業界標準に準拠したタイミングルールの検証
+- **固有名詞抽出**: Gemini APIを使用した自動固有名詞抽出と管理
+- **プラットフォーム別プリセット**: Netflix、U-NEXT、劇場公開、NHK、YouTube等のプリセット対応
+- **データ永続化**: PostgreSQL/SQLiteによる履歴管理とプロジェクト管理
+
 ### ⬇️ ダウンロード
 - テキスト (.txt)
 - JSON (完全なメタデータ)
 - SRT字幕
 - WebVTT字幕
+- SRT字幕（話者タグ付き）
 
 ## 技術スタック
 
@@ -41,6 +54,12 @@ AI搭載の音声文字起こし・校正アプリケーション。Vercelでホ
 - **AI校正**:
   - Anthropic Claude API
   - OpenAI GPT-4o API
+- **AI翻訳・分析**:
+  - Google Gemini API (gemini-2.5-flash-lite)
+- **データベース**:
+  - Prisma ORM
+  - SQLite (ローカル開発)
+  - PostgreSQL (本番環境)
 
 ## セットアップ
 
@@ -180,30 +199,62 @@ Vercelダッシュボード → Settings → Environment Variables で以下を�
 speech-to-text-react/
 ├── app/
 │   ├── api/
-│   │   ├── transcribe/       # 文字起こしAPI
-│   │   ├── proofread/         # 校正API
-│   │   └── proper-nouns/      # 固有名詞管理API
-│   ├── globals.css            # グローバルスタイル
-│   ├── layout.tsx             # レイアウト
-│   └── page.tsx               # メインページ
+│   │   ├── transcribe/              # 文字起こしAPI
+│   │   ├── proofread/                # 校正API
+│   │   ├── translate/               # 翻訳API（キャラクター対応）
+│   │   ├── translate-batch/         # バッチ翻訳API
+│   │   ├── analyze-script/           # 脚本分析API
+│   │   ├── extract-persona/         # ペルソナ抽出API
+│   │   ├── auto-map-speakers/        # 話者マッピング自動化API
+│   │   ├── identify-characters/     # キャラクター識別API
+│   │   ├── extract-proper-nouns/    # 固有名詞抽出API
+│   │   ├── parse-pdf/                # PDF解析API
+│   │   ├── projects/                 # プロジェクト管理API
+│   │   ├── transcriptions/           # 書き起こし履歴API
+│   │   ├── proofreading-results/     # 校正結果API
+│   │   ├── subtitle-sessions/        # 字幕セッションAPI
+│   │   ├── movie-projects/           # 映画プロジェクトAPI
+│   │   ├── characters/               # キャラクター管理API
+│   │   ├── env-keys/                 # 環境変数取得API
+│   │   └── migrate/                  # データマイグレーションAPI
+│   ├── globals.css                    # グローバルスタイル
+│   ├── layout.tsx                     # レイアウト
+│   └── page.tsx                       # メインページ
 ├── components/
-│   ├── FileUpload.tsx         # ファイルアップロード
-│   ├── SettingsModal.tsx      # 設定モーダル
-│   ├── TranscriptionResult.tsx # 文字起こし結果表示
-│   ├── ProofreadingSection.tsx # 校正セクション
-│   └── ProperNounsManager.tsx  # 固有名詞管理
+│   ├── FileUpload.tsx                 # ファイルアップロード
+│   ├── SettingsModal.tsx               # 設定モーダル
+│   ├── TranscriptionResult.tsx         # 文字起こし結果表示
+│   ├── ProofreadingSection.tsx         # 校正セクション
+│   ├── ProperNounsManager.tsx          # 固有名詞管理
+│   ├── MovieSubtitleTab.tsx            # 映画字幕タブ（メイン）
+│   ├── CharacterManager.tsx            # キャラクター管理
+│   ├── MovieSettings.tsx               # 作品設定
+│   ├── TranslationEditor.tsx           # 翻訳エディタ
+│   ├── SpeakerMapping.tsx              # 話者マッピング
+│   ├── SubtitleTimingValidator.tsx     # タイミング検証
+│   ├── ProperNounExtractor.tsx         # 固有名詞抽出
+│   ├── DialogueList.tsx                # セリフ一覧
+│   ├── CharacterPanel.tsx              # キャラクターパネル
+│   └── HistorySidebar.tsx              # 履歴サイドバー
 ├── lib/
-│   ├── types.ts               # 型定義
-│   └── utils.ts               # ユーティリティ関数
+│   ├── types.ts                        # 型定義
+│   ├── utils.ts                        # ユーティリティ関数
+│   ├── subtitlePresets.ts             # 字幕プリセット定義
+│   └── prisma.ts                       # Prismaクライアント
+├── prisma/
+│   ├── schema.prisma                   # SQLiteスキーマ
+│   ├── schema.postgresql.prisma        # PostgreSQLスキーマ
+│   └── dev.db                          # SQLiteデータベース
 ├── scripts/
-│   └── whisperx_transcribe.py # WhisperXスクリプト
-├── public/                    # 静的ファイル
-├── .env.example               # 環境変数サンプル
-├── next.config.js             # Next.js設定
-├── tailwind.config.ts         # Tailwind設定
-├── tsconfig.json              # TypeScript設定
-├── vercel.json                # Vercel設定
-└── package.json               # 依存関係
+│   └── whisperx_transcribe.py         # WhisperXスクリプト
+├── public/                             # 静的ファイル
+├── env.example.txt                      # 環境変数サンプル
+├── prisma.config.ts                    # Prisma設定
+├── next.config.js                       # Next.js設定
+├── tailwind.config.ts                  # Tailwind設定
+├── tsconfig.json                        # TypeScript設定
+├── vercel.json                          # Vercel設定
+└── package.json                         # 依存関係
 \`\`\`
 
 ## 使い方
@@ -241,6 +292,75 @@ APIキーはブラウザのlocalStorageに保存されます。
 
 よく使う固有名詞を登録しておくと、校正時に参照されます。
 
+### 6. 映画字幕翻訳機能
+
+#### 6.1 基本的な使い方
+
+1. **プロジェクトの作成**
+   - メインページで「プロジェクトを選択または作成」からプロジェクトを作成
+
+2. **脚本のアップロード**
+   - 「映画字幕」タブを開く
+   - 「脚本」ボタンからPDFまたはテキストファイルをアップロード
+   - 自動的に作品設定とキャラクター情報が抽出されます
+
+3. **音声ファイルのアップロード**
+   - 「音声」ボタンからMP3等の音声ファイルをアップロード
+   - ElevenLabs Scribe APIで話者分離付きの書き起こしが実行されます
+   - 脚本が存在する場合、自動的に話者マッピングが実行されます
+
+4. **SRTファイルのアップロード**
+   - 「SRT」ボタンから既存のSRTファイルをアップロード
+   - 話者タグが含まれている場合は自動的に認識されます
+
+5. **キャラクターの設定**
+   - 「キャラクター」タブで各キャラクターの詳細情報を設定
+   - ペルソナ情報（性格、背景、話し方の特徴等）を入力
+   - コメディ作品の場合はギャグレベルやローカル性も設定可能
+
+6. **翻訳の実行**
+   - 「翻訳エディタ」タブで翻訳を実行
+   - キャラクター別の個性を反映した翻訳が自動生成されます
+   - バッチ翻訳機能で一括処理も可能
+
+7. **タイミング検証**
+   - 「タイミング検証」タブでNetflix等の業界標準に準拠しているか検証
+   - 違反があれば自動修正機能も利用可能
+
+8. **エクスポート**
+   - 「エクスポート」ボタンからSRT/VTT形式でダウンロード
+   - 話者タグ付きSRTも生成可能
+
+#### 6.2 話者マッピング自動化
+
+- 音声データと脚本データを総合的に分析して、話者IDとキャラクターを自動マッピング
+- 確信度が高い（0.8以上）マッピングは自動適用
+- 確信度が中程度（0.5-0.8）のマッピングは確認UIを表示
+- 手動修正も可能
+
+#### 6.3 キャラクター個性の反映
+
+- 脚本から包括的なペルソナ情報を自動抽出
+- 性格、背景、話し方の特徴、コメディ要素等を詳細に分析
+- 翻訳時にキャラクターの個性を最大限に反映
+
+#### 6.4 プラットフォーム別プリセット
+
+以下のプラットフォーム向けのプリセットが利用可能：
+- Netflix（日本語・英語）
+- U-NEXT（日本語）
+- Amazon Prime Video（日本語）
+- 劇場公開（日本語）
+- NHK（日本語）
+- 民放テレビ（日本語）
+- YouTube/Web（日本語・英語）
+
+各プリセットには以下の設定が含まれます：
+- 文字数制限
+- 行数制限
+- CPS（文字/秒）制限
+- タイミングルール（最小/最大表示時間、ギャップ制限等）
+
 ## 注意事項
 
 - **ファイルサイズ制限**: 最大300MB
@@ -248,13 +368,26 @@ APIキーはブラウザのlocalStorageに保存されます。
 - **WhisperX要件**: ローカルモードにはPython環境とWhisperXのインストールが必要です
 - **データ保存**: 固有名詞データは現在メモリ上に保存されます（本番環境ではデータベースの使用を推奨）
 
+## 実装済み機能
+
+- [x] Vercel PostgresまたはKVによる固有名詞の永続化 → SQLite/PostgreSQL対応完了
+- [x] 文字起こし履歴の保存 → 実装完了
+- [x] 映画字幕翻訳機能 → 実装完了
+- [x] キャラクター別翻訳機能 → 実装完了
+- [x] 話者マッピング自動化 → 実装完了
+- [x] 脚本分析機能 → 実装完了
+- [x] ペルソナ抽出機能 → 実装完了
+- [x] 字幕タイミング検証機能 → 実装完了
+- [x] プラットフォーム別プリセット → 実装完了
+- [x] データベース機能（Prisma + SQLite/PostgreSQL） → 実装完了
+
 ## 今後の改善予定
 
-- [x] ~~Vercel PostgresまたはKVによる固有名詞の永続化~~ → SQLite/PostgreSQL対応完了
-- [x] ~~文字起こし履歴の保存~~ → 実装完了
 - [ ] ユーザー認証機能
-- [ ] バッチ処理機能
+- [ ] バッチ処理機能の拡張
 - [ ] リアルタイム文字起こし
+- [ ] 複数言語対応の拡張
+- [ ] 字幕エディタのUI改善
 
 ## ライセンス
 
