@@ -448,17 +448,19 @@ export default function SubtitleGenerator({ transcriptionResult, subtitleSetting
         />
 
         {/* タブ */}
-        <div style={{ display: 'flex', borderBottom: '1px solid var(--border)', marginBottom: '1rem' }}>
+        <div style={{ display: 'flex', borderBottomWidth: '1px', borderBottomStyle: 'solid', borderBottomColor: 'var(--border)', marginBottom: '1rem' }}>
           <button
             onClick={() => setTextTab('input')}
             style={{
               padding: '0.5rem 1rem',
               fontSize: '11px',
               fontWeight: 600,
-              borderBottom: textTab === 'input' ? '2px solid var(--accent)' : 'none',
+              borderTop: 'none',
+              borderLeft: 'none',
+              borderRight: 'none',
+              borderBottom: textTab === 'input' ? '2px solid var(--accent)' : '2px solid transparent',
               color: textTab === 'input' ? 'var(--accent)' : 'var(--text-muted)',
               background: 'transparent',
-              border: 'none',
               cursor: 'pointer',
               marginBottom: '-1px'
             }}
@@ -472,10 +474,12 @@ export default function SubtitleGenerator({ transcriptionResult, subtitleSetting
               padding: '0.5rem 1rem',
               fontSize: '11px',
               fontWeight: 600,
-              borderBottom: textTab === 'preview' ? '2px solid var(--accent)' : 'none',
+              borderTop: 'none',
+              borderLeft: 'none',
+              borderRight: 'none',
+              borderBottom: textTab === 'preview' ? '2px solid var(--accent)' : '2px solid transparent',
               color: textTab === 'preview' ? 'var(--accent)' : 'var(--text-muted)',
               background: 'transparent',
-              border: 'none',
               cursor: (!result || !result.success) ? 'not-allowed' : 'pointer',
               marginBottom: '-1px',
               opacity: (!result || !result.success) ? 0.5 : 1

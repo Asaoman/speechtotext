@@ -199,17 +199,19 @@ export default function ProofreadingSection({
       {/* テキスト */}
       <div className="card" style={{ padding: '1rem' }}>
         {/* タブ */}
-        <div style={{ display: 'flex', borderBottom: '1px solid var(--border)', marginBottom: '1rem' }}>
+        <div style={{ display: 'flex', borderBottomWidth: '1px', borderBottomStyle: 'solid', borderBottomColor: 'var(--border)', marginBottom: '1rem' }}>
           <button
             onClick={() => setLeftTab('original')}
             style={{
               padding: '0.5rem 1rem',
               fontSize: '11px',
               fontWeight: 600,
-              borderBottom: leftTab === 'original' ? '2px solid var(--accent)' : 'none',
+              borderTop: 'none',
+              borderLeft: 'none',
+              borderRight: 'none',
+              borderBottom: leftTab === 'original' ? '2px solid var(--accent)' : '2px solid transparent',
               color: leftTab === 'original' ? 'var(--accent)' : 'var(--text-muted)',
               background: 'transparent',
-              border: 'none',
               cursor: 'pointer',
               marginBottom: '-1px'
             }}
@@ -222,10 +224,12 @@ export default function ProofreadingSection({
               padding: '0.5rem 1rem',
               fontSize: '11px',
               fontWeight: 600,
-              borderBottom: leftTab === 'result' ? '2px solid var(--accent)' : 'none',
+              borderTop: 'none',
+              borderLeft: 'none',
+              borderRight: 'none',
+              borderBottom: leftTab === 'result' ? '2px solid var(--accent)' : '2px solid transparent',
               color: leftTab === 'result' ? 'var(--accent)' : 'var(--text-muted)',
               background: 'transparent',
-              border: 'none',
               cursor: 'pointer',
               marginBottom: '-1px'
             }}

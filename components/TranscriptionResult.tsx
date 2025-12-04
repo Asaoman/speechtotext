@@ -1,15 +1,119 @@
 'use client'
 
+import { useState, useEffect } from 'react'
 import { TranscriptionResult } from '@/lib/types'
-import { generateSRT, generateVTT, downloadFile, generateTimestamp } from '@/lib/utils'
+import { generateSRT, generateVTT, downloadFile, generateTimestamp, storage } from '@/lib/utils'
+
+interface Project {
+  id: string
+  name: string
+}
 
 interface TranscriptionResultProps {
   result: TranscriptionResult
+  meta?: {
+    id?: string
+    fileName?: string
+    service?: string
+    isNew?: boolean
+  }
   onStartProofreading?: () => void
   onStartSubtitleGeneration?: () => void
+  onSaved?: (id: string) => void
 }
 
-export default function TranscriptionResultComponent({ result, onStartProofreading, onStartSubtitleGeneration }: TranscriptionResultProps) {
+export default function TranscriptionResultComponent({ result, meta, onStartProofreading, onStartSubtitleGeneration, onSaved }: TranscriptionResultProps) {
+  const [projects, setProjects] = useState<Project[]>([])
+  const [selectedProjectId, setSelectedProjectId] = useState<string>('')
+  const [newProjectName, setNewProjectName] = useState('')
+  const [isSaving, setIsSaving] = useState(false)
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saved' | 'error'>('idle')
+  const [showProjectSelect, setShowProjectSelect] = useState(false)
+
+  // プロジェクト一覧を取得
+  useEffect(() => {
+    fetchProjects()
+    const currentProjectId = storage.getCurrentProjectId()
+    if (currentProjectId) {
+      setSelectedProjectId(currentProjectId)
+    }
+  }, [])
+
+  const fetchProjects = async () => {
+    try {
+      const res = await fetch('/api/projects')
+      if (res.ok) {
+        const data = await res.json()
+        setProjects(data)
+      }
+    } catch (err) {
+      console.error('Failed to fetch projects:', err)
+    }
+  }
+
+  // 新規プロジェクト作成
+  const handleCreateProject = async () => {
+    if (!newProjectName.trim()) return
+
+    try {
+      const res = await fetch('/api/projects', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: newProjectName.trim() })
+      })
+      if (res.ok) {
+        const project = await res.json()
+        setProjects([...projects, project])
+        setSelectedProjectId(project.id)
+        setNewProjectName('')
+        storage.setCurrentProjectId(project.id)
+      }
+    } catch (err) {
+      console.error('Failed to create project:', err)
+    }
+  }
+
+  // 書き起こし結果を保存
+  const handleSave = async () => {
+    if (!selectedProjectId) {
+      setShowProjectSelect(true)
+      return
+    }
+
+    setIsSaving(true)
+    setSaveStatus('idle')
+
+    try {
+      const res = await fetch('/api/transcriptions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          projectId: selectedProjectId,
+          fileName: meta?.fileName || 'untitled',
+          service: meta?.service || 'unknown',
+          language: result.language,
+          text: result.text,
+          segments: result.segments,
+          words: result.words,
+        })
+      })
+
+      if (res.ok) {
+        const data = await res.json()
+        setSaveStatus('saved')
+        onSaved?.(data.id)
+        setTimeout(() => setSaveStatus('idle'), 3000)
+      } else {
+        setSaveStatus('error')
+      }
+    } catch (err) {
+      console.error('Failed to save transcription:', err)
+      setSaveStatus('error')
+    } finally {
+      setIsSaving(false)
+    }
+  }
+
   const handleDownload = (format: 'txt' | 'json' | 'srt' | 'vtt') => {
     const timestamp = generateTimestamp()
 
@@ -38,7 +142,161 @@ export default function TranscriptionResultComponent({ result, onStartProofreadi
 
   return (
     <div className="card" style={{ padding: '1rem' }}>
-      <h3 style={{ fontSize: '13px', fontWeight: 600, marginBottom: '1rem' }}>変換結果</h3>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+        <h3 style={{ fontSize: '13px', fontWeight: 600 }}>変換結果</h3>
+        <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+          {saveStatus === 'saved' && (
+            <span style={{ fontSize: '11px', color: 'rgb(34, 197, 94)' }}>✓ 保存しました</span>
+          )}
+          {saveStatus === 'error' && (
+            <span style={{ fontSize: '11px', color: 'rgb(239, 68, 68)' }}>保存に失敗</span>
+          )}
+          <button
+            onClick={handleSave}
+            disabled={isSaving || meta?.id !== undefined}
+            style={{
+              padding: '0.4rem 0.75rem',
+              fontSize: '11px',
+              fontWeight: 600,
+              background: meta?.id ? 'var(--border)' : 'var(--accent)',
+              color: meta?.id ? 'var(--text-muted)' : 'white',
+              borderTop: 'none',
+              borderLeft: 'none',
+              borderRight: 'none',
+              borderBottom: 'none',
+              borderRadius: '4px',
+              cursor: meta?.id ? 'default' : 'pointer',
+              opacity: isSaving ? 0.7 : 1
+            }}
+          >
+            {isSaving ? '保存中...' : meta?.id ? '保存済み' : '💾 保存'}
+          </button>
+        </div>
+      </div>
+
+      {/* プロジェクト選択（保存時に表示） */}
+      {showProjectSelect && (
+        <div style={{ 
+          padding: '1rem', 
+          marginBottom: '1rem', 
+          background: 'var(--bg)', 
+          borderRadius: '6px',
+          borderWidth: '1px',
+          borderStyle: 'solid',
+          borderColor: 'var(--border)'
+        }}>
+          <div style={{ fontSize: '12px', fontWeight: 600, marginBottom: '0.75rem' }}>
+            保存先プロジェクトを選択
+          </div>
+          <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.75rem' }}>
+            <select
+              value={selectedProjectId}
+              onChange={(e) => {
+                setSelectedProjectId(e.target.value)
+                storage.setCurrentProjectId(e.target.value)
+              }}
+              style={{
+                flex: 1,
+                padding: '0.5rem',
+                fontSize: '12px',
+                background: 'var(--card-bg)',
+                color: 'var(--text)',
+                borderWidth: '1px',
+                borderStyle: 'solid',
+                borderColor: 'var(--border)',
+                borderRadius: '4px'
+              }}
+            >
+              <option value="">プロジェクトを選択...</option>
+              {projects.map(p => (
+                <option key={p.id} value={p.id}>{p.name}</option>
+              ))}
+            </select>
+          </div>
+          <div style={{ display: 'flex', gap: '0.5rem' }}>
+            <input
+              type="text"
+              value={newProjectName}
+              onChange={(e) => setNewProjectName(e.target.value)}
+              placeholder="新規プロジェクト名"
+              style={{
+                flex: 1,
+                padding: '0.5rem',
+                fontSize: '12px',
+                background: 'var(--card-bg)',
+                color: 'var(--text)',
+                borderWidth: '1px',
+                borderStyle: 'solid',
+                borderColor: 'var(--border)',
+                borderRadius: '4px'
+              }}
+            />
+            <button
+              onClick={handleCreateProject}
+              disabled={!newProjectName.trim()}
+              style={{
+                padding: '0.5rem 1rem',
+                fontSize: '11px',
+                fontWeight: 600,
+                background: 'var(--accent)',
+                color: 'white',
+                borderTop: 'none',
+                borderLeft: 'none',
+                borderRight: 'none',
+                borderBottom: 'none',
+                borderRadius: '4px',
+                cursor: 'pointer',
+                opacity: !newProjectName.trim() ? 0.5 : 1
+              }}
+            >
+              作成
+            </button>
+          </div>
+          <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.75rem' }}>
+            <button
+              onClick={() => setShowProjectSelect(false)}
+              style={{
+                flex: 1,
+                padding: '0.5rem',
+                fontSize: '11px',
+                background: 'var(--border)',
+                color: 'var(--text)',
+                borderTop: 'none',
+                borderLeft: 'none',
+                borderRight: 'none',
+                borderBottom: 'none',
+                borderRadius: '4px',
+                cursor: 'pointer'
+              }}
+            >
+              キャンセル
+            </button>
+            <button
+              onClick={() => {
+                setShowProjectSelect(false)
+                if (selectedProjectId) handleSave()
+              }}
+              disabled={!selectedProjectId}
+              style={{
+                flex: 1,
+                padding: '0.5rem',
+                fontSize: '11px',
+                fontWeight: 600,
+                background: selectedProjectId ? 'var(--accent)' : 'var(--border)',
+                color: selectedProjectId ? 'white' : 'var(--text-muted)',
+                borderTop: 'none',
+                borderLeft: 'none',
+                borderRight: 'none',
+                borderBottom: 'none',
+                borderRadius: '4px',
+                cursor: selectedProjectId ? 'pointer' : 'default'
+              }}
+            >
+              保存する
+            </button>
+          </div>
+        </div>
+      )}
 
       {result.language && (
         <div style={{ marginBottom: '1rem' }}>

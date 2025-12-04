@@ -553,9 +553,11 @@ export async function POST(request: NextRequest) {
     let actualModel = model
     if (service === 'gemini') {
       const modelMigrations: { [key: string]: string } = {
-        'gemini-1.5-flash-latest': 'gemini-1.5-flash',
+        'gemini-1.5-flash-latest': 'gemini-2.5-flash-lite',
+        'gemini-1.5-flash': 'gemini-2.5-flash-lite',
         'gemini-1.5-pro-latest': 'gemini-1.5-pro',
-        'gemini-2.5-flash-preview-05-20': 'gemini-2.0-flash-exp',
+        'gemini-2.5-flash-preview-05-20': 'gemini-2.5-flash-lite',
+        'gemini-2.0-flash-exp': 'gemini-2.5-flash-lite', // 実験版から安定版へ
       }
       if (modelMigrations[model]) {
         actualModel = modelMigrations[model]

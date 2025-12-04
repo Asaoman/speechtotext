@@ -59,27 +59,88 @@ npm install
 
 ### 3. 環境変数の設定
 
-\`.env.example\` を \`.env.local\` にコピーして、APIキーを設定します：
+\`env.example.txt\` を \`.env.local\` にコピーして、設定を編集します：
 
 \`\`\`bash
-cp .env.example .env.local
+# Windows
+copy env.example.txt .env.local
+
+# Mac/Linux
+cp env.example.txt .env.local
 \`\`\`
 
 \`.env.local\` を編集：
 
 \`\`\`env
+# データベース設定（下記「データベース設定」参照）
+DATABASE_URL="file:./prisma/dev.db"
+
+# AIサービスのAPIキー
 OPENAI_API_KEY=your_openai_api_key
 ELEVENLABS_API_KEY=your_elevenlabs_api_key
 ANTHROPIC_API_KEY=your_anthropic_api_key
+GOOGLE_GENERATIVE_AI_API_KEY=your_gemini_api_key
 \`\`\`
 
-### 4. 開発サーバーの起動
+### 4. データベースのセットアップ
+
+#### ローカル開発（SQLite - 推奨）
+
+SQLiteはインストール不要でファイルベースで動作します。
+
+\`\`\`bash
+# データベースのセットアップ
+npm run db:setup
+\`\`\`
+
+これで \`prisma/dev.db\` にローカルデータベースが作成されます。
+
+#### 本番環境（PostgreSQL）
+
+本番環境では無料のPostgreSQLサービスを利用できます：
+
+| サービス | 無料枠 | 特徴 |
+|---------|-------|------|
+| **Neon** | 0.5GB | Serverless, 自動スケール, **推奨** |
+| **Supabase** | 500MB | Auth/Storage付き, 多機能 |
+| **Vercel Postgres** | 256MB | Vercelと親和性高い |
+
+**Neon（推奨）のセットアップ手順：**
+
+1. https://neon.tech にアクセス
+2. GitHub/Googleでサインアップ（無料）
+3. 「Create Project」でプロジェクト作成
+4. Connection stringをコピー
+5. \`.env.local\` に設定：
+   \`\`\`env
+   DATABASE_URL="postgresql://username:password@host.neon.tech/neondb?sslmode=require"
+   \`\`\`
+6. PostgreSQL用スキーマに切り替え：
+   \`\`\`bash
+   npm run db:use-postgres
+   npm run db:setup
+   \`\`\`
+
+### 5. 開発サーバーの起動
 
 \`\`\`bash
 npm run dev
 \`\`\`
 
 ブラウザで http://localhost:3000 を開きます。
+
+---
+
+## データベースコマンド一覧
+
+| コマンド | 説明 |
+|---------|------|
+| \`npm run db:setup\` | Prisma生成 + スキーマ適用 |
+| \`npm run db:push\` | スキーマをDBに反映 |
+| \`npm run db:studio\` | Prisma Studio（GUI）を起動 |
+| \`npm run db:reset\` | DBをリセット（データ削除） |
+| \`npm run db:use-sqlite\` | SQLiteスキーマに切り替え |
+| \`npm run db:use-postgres\` | PostgreSQLスキーマに切り替え |
 
 ## Vercelへのデプロイ
 
@@ -189,9 +250,9 @@ APIキーはブラウザのlocalStorageに保存されます。
 
 ## 今後の改善予定
 
-- [ ] Vercel PostgresまたはKVによる固有名詞の永続化
+- [x] ~~Vercel PostgresまたはKVによる固有名詞の永続化~~ → SQLite/PostgreSQL対応完了
+- [x] ~~文字起こし履歴の保存~~ → 実装完了
 - [ ] ユーザー認証機能
-- [ ] 文字起こし履歴の保存
 - [ ] バッチ処理機能
 - [ ] リアルタイム文字起こし
 

@@ -1,0 +1,230 @@
+// Prisma Schema for Speech-to-Text Application
+// Production: PostgreSQL (Neon/Supabase/Vercel Postgres)
+// Note: DATABASE_URL is configured in prisma.config.ts (Prisma 7+)
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ============================================
+// プロジェクト
+// ============================================
+model Project {
+  id            String   @id @default(cuid())
+  name          String
+  description   String?
+  customContext String?  @db.Text
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  // Relations
+  transcriptions      Transcription[]
+  proofreadingResults ProofreadingResult[]
+  subtitleSessions    SubtitleSession[]
+  movieProjects       MovieProject[]
+  properNouns         ProperNoun[]
+}
+
+// ============================================
+// 書き起こし結果
+// ============================================
+model Transcription {
+  id        String   @id @default(cuid())
+  projectId String
+  fileName  String?
+  service   String   // openai, elevenlabs, whisperx
+  language  String?
+  text      String   @db.Text
+  segments  Json?    // TranscriptionSegment[]
+  words     Json?    // TranscriptionWord[]
+  duration  Float?   // 音声の長さ（秒）
+  createdAt DateTime @default(now())
+
+  // Relations
+  project      Project             @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  proofreading ProofreadingResult?
+
+  @@index([projectId])
+  @@index([createdAt])
+}
+
+// ============================================
+// 校正結果
+// ============================================
+model ProofreadingResult {
+  id              String   @id @default(cuid())
+  projectId       String
+  transcriptionId String?  @unique
+  service         String   // openai, claude, gemini
+  model           String?
+  language        String?  // ja, en
+  originalText    String   @db.Text
+  correctedText   String   @db.Text
+  changes         Json?    // ProofreadingChange[]
+  suggestions     Json?    // string[]
+  createdAt       DateTime @default(now())
+
+  // Relations
+  project       Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  transcription Transcription? @relation(fields: [transcriptionId], references: [id])
+
+  @@index([projectId])
+  @@index([createdAt])
+}
+
+// ============================================
+// 字幕セッション
+// ============================================
+model SubtitleSession {
+  id           String   @id @default(cuid())
+  projectId    String
+  name         String?
+  language     String   // en, ja
+  sourceText   String?  @db.Text
+  srtContent   String?  @db.Text
+  vttContent   String?  @db.Text
+  settings     Json?    // SubtitleGenerationSettings
+  totalEntries Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // Relations
+  project  Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  entries  SubtitleEntry[]
+
+  @@index([projectId])
+  @@index([createdAt])
+}
+
+// ============================================
+// 字幕エントリ
+// ============================================
+model SubtitleEntry {
+  id        String @id @default(cuid())
+  sessionId String
+  index     Int
+  startTime Float
+  endTime   Float
+  text      String @db.Text
+  lines     Json   // string[]
+
+  // Relations
+  session SubtitleSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+  @@index([index])
+}
+
+// ============================================
+// 映画字幕プロジェクト
+// ============================================
+model MovieProject {
+  id               String   @id @default(cuid())
+  projectId        String
+  title            String
+  originalLanguage String   @default("en") // en, ja, other
+  targetLanguage   String   @default("ja") // en, ja
+  genres           Json?    // MovieGenre[]
+  eraSetting       String?  // EraSetting
+  targetAudience   String?  // TargetAudience
+  translationStyle String?  // TranslationStyle
+  toneDescription  String?  @db.Text
+  specialInstructions String? @db.Text
+  glossary         Json?    // Record<string, string>
+  preset           String?  // SubtitlePlatform
+  settings         Json?    // MovieSubtitleGenerationSettings
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  // Relations
+  project    Project             @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  characters MovieCharacter[]
+  subtitles  MovieSubtitleEntry[]
+
+  @@index([projectId])
+  @@index([createdAt])
+}
+
+// ============================================
+// 映画キャラクター
+// ============================================
+model MovieCharacter {
+  id              String   @id @default(cuid())
+  movieProjectId  String
+  name            String
+  nameReading     String?
+  gender          String   @default("unknown") // male, female, unknown, other
+  ageGroup        String   @default("adult")   // child, teen, young_adult, adult, middle_aged, elderly
+  speechStyle     String   @default("casual")  // SpeechStyleType
+  firstPerson     String   @default("私")
+  secondPerson    String   @default("あなた")
+  sentenceEndings Json?    // string[]
+  characterTraits String?  @db.Text
+  sampleDialogues Json?    // string[]
+  speakerId       String?
+  color           String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  // Relations
+  movieProject MovieProject         @relation(fields: [movieProjectId], references: [id], onDelete: Cascade)
+  subtitles    MovieSubtitleEntry[]
+
+  @@index([movieProjectId])
+}
+
+// ============================================
+// 映画字幕エントリ
+// ============================================
+model MovieSubtitleEntry {
+  id             String   @id @default(cuid())
+  movieProjectId String
+  characterId    String?
+  index          Int
+  startTime      Float
+  endTime        Float
+  originalText   String?  @db.Text
+  translatedText String?  @db.Text
+  speakerId      String?
+  isTranslated   Boolean  @default(false)
+  needsReview    Boolean  @default(false)
+  notes          String?  @db.Text
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  // Relations
+  movieProject MovieProject    @relation(fields: [movieProjectId], references: [id], onDelete: Cascade)
+  character    MovieCharacter? @relation(fields: [characterId], references: [id])
+
+  @@index([movieProjectId])
+  @@index([index])
+}
+
+// ============================================
+// 固有名詞
+// ============================================
+model ProperNoun {
+  id          String   @id @default(cuid())
+  projectId   String
+  term        String
+  reading     String?
+  category    String?  // person, place, organization, work, technical, other
+  description String?  @db.Text
+  variants    Json?    // string[]
+  usageCount  Int      @default(0)
+  approved    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, term])
+  @@index([projectId])
+  @@index([category])
+}
+

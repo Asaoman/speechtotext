@@ -1,8 +1,8 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { ApiKeys, SubtitleSettings, AIPreferences } from '@/lib/types'
-import { DEFAULT_SUBTITLE_SETTINGS, DEFAULT_AI_PREFERENCES } from '@/lib/utils'
+import { DEFAULT_SUBTITLE_SETTINGS, DEFAULT_AI_PREFERENCES, storage } from '@/lib/utils'
 
 // モデル情報（料金含む）
 const OPENAI_MODELS = [
@@ -20,10 +20,10 @@ const CLAUDE_MODELS = [
 ]
 
 const GEMINI_MODELS = [
-  { value: 'gemini-1.5-flash', label: 'Gemini 1.5 Flash', price: '$0.075/$0.30 per 1M tokens', recommended: true, description: '最安・最もコスパが良い' },
+  { value: 'gemini-2.5-flash-lite', label: 'Gemini 2.5 Flash Lite', price: '$0.10/$0.40 per 1M tokens', recommended: true, description: '最新・最安価・推奨' },
+  { value: 'gemini-2.0-flash-exp', label: 'Gemini 2.0 Flash (実験版)', price: '無料（実験版）', recommended: false, description: '実験版・無料' },
+  { value: 'gemini-1.5-flash-latest', label: 'Gemini 1.5 Flash Latest', price: '$0.075/$0.30 per 1M tokens', recommended: false, description: '安定版' },
   { value: 'gemini-1.5-pro', label: 'Gemini 1.5 Pro', price: '$1.25/$5.00 per 1M tokens', recommended: false, description: '高性能・中価格' },
-  { value: 'gemini-2.0-flash-exp', label: 'Gemini 2.0 Flash Experimental', price: '実験版（料金変動あり）', recommended: false, description: '最新・実験版' },
-  { value: 'gemini-exp-1206', label: 'Gemini Experimental 1206', price: '実験版（料金変動あり）', recommended: false, description: '実験版' },
 ]
 
 interface SettingsModalProps {
@@ -37,7 +37,13 @@ interface SettingsModalProps {
 }
 
 export default function SettingsModal({ apiKeys, subtitleSettings, aiPreferences, onSaveApiKeys, onSaveSubtitleSettings, onSaveAIPreferences, onClose }: SettingsModalProps) {
-  const [activeTab, setActiveTab] = useState<'api' | 'subtitle'>('api')
+  const [activeTab, setActiveTab] = useState<'api' | 'subtitle' | 'database'>('api')
+  
+  // Database migration state
+  const [dbStatus, setDbStatus] = useState<{ projects: number; properNouns: number; transcriptions: number } | null>(null)
+  const [dbReady, setDbReady] = useState<boolean | null>(null)
+  const [isMigrating, setIsMigrating] = useState(false)
+  const [migrationResult, setMigrationResult] = useState<any>(null)
 
   // API Keys state
   const [elevenlabsKey, setElevenlabsKey] = useState(apiKeys.elevenlabs || '')
@@ -55,6 +61,58 @@ export default function SettingsModal({ apiKeys, subtitleSettings, aiPreferences
   const [currentLanguage, setCurrentLanguage] = useState<'en' | 'ja'>(subtitleSettings.currentLanguage)
   const [enSettings, setEnSettings] = useState(subtitleSettings.en)
   const [jaSettings, setJaSettings] = useState(subtitleSettings.ja)
+
+  // DB状態確認
+  const checkDbStatus = async () => {
+    try {
+      const res = await fetch('/api/migrate')
+      const data = await res.json()
+      setDbReady(data.ready)
+      setDbStatus(data.dbStatus)
+    } catch (err) {
+      setDbReady(false)
+      setDbStatus(null)
+    }
+  }
+
+  // localStorageからDBへのマイグレーション
+  const handleMigration = async () => {
+    setIsMigrating(true)
+    setMigrationResult(null)
+
+    try {
+      // localStorageからデータを取得
+      const projects = storage.getProjects()
+      const dictionaries = storage.getDictionaries()
+      
+      // 辞書エントリをプロジェクトIDごとに取得
+      const dictionaryEntries: Record<string, any[]> = {}
+      for (const dict of dictionaries) {
+        dictionaryEntries[dict.id] = storage.getDictionaryEntries(dict.id)
+      }
+
+      // マイグレーション実行
+      const res = await fetch('/api/migrate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          projects,
+          dictionaries,
+          dictionaryEntries,
+        })
+      })
+
+      const result = await res.json()
+      setMigrationResult(result)
+      
+      // DB状態を更新
+      await checkDbStatus()
+    } catch (err: any) {
+      setMigrationResult({ error: err.message })
+    } finally {
+      setIsMigrating(false)
+    }
+  }
 
   const handleSaveApiKeys = () => {
     onSaveApiKeys({
@@ -108,17 +166,19 @@ export default function SettingsModal({ apiKeys, subtitleSettings, aiPreferences
           </div>
 
           {/* タブ */}
-          <div style={{ display: 'flex', borderBottom: '1px solid var(--border)', marginBottom: '1.5rem' }}>
+          <div style={{ display: 'flex', borderBottomWidth: '1px', borderBottomStyle: 'solid', borderBottomColor: 'var(--border)', marginBottom: '1.5rem' }}>
             <button
               onClick={() => setActiveTab('api')}
               style={{
                 padding: '0.75rem 1.5rem',
                 fontSize: '13px',
                 fontWeight: 600,
-                borderBottom: activeTab === 'api' ? '2px solid var(--accent)' : 'none',
+                borderTop: 'none',
+                borderLeft: 'none',
+                borderRight: 'none',
+                borderBottom: activeTab === 'api' ? '2px solid var(--accent)' : '2px solid transparent',
                 color: activeTab === 'api' ? 'var(--accent)' : 'var(--text-muted)',
                 background: 'transparent',
-                border: 'none',
                 cursor: 'pointer'
               }}
             >
@@ -130,14 +190,36 @@ export default function SettingsModal({ apiKeys, subtitleSettings, aiPreferences
                 padding: '0.75rem 1.5rem',
                 fontSize: '13px',
                 fontWeight: 600,
-                borderBottom: activeTab === 'subtitle' ? '2px solid var(--accent)' : 'none',
+                borderTop: 'none',
+                borderLeft: 'none',
+                borderRight: 'none',
+                borderBottom: activeTab === 'subtitle' ? '2px solid var(--accent)' : '2px solid transparent',
                 color: activeTab === 'subtitle' ? 'var(--accent)' : 'var(--text-muted)',
                 background: 'transparent',
-                border: 'none',
                 cursor: 'pointer'
               }}
             >
               字幕設定
+            </button>
+            <button
+              onClick={() => {
+                setActiveTab('database')
+                checkDbStatus()
+              }}
+              style={{
+                padding: '0.75rem 1.5rem',
+                fontSize: '13px',
+                fontWeight: 600,
+                borderTop: 'none',
+                borderLeft: 'none',
+                borderRight: 'none',
+                borderBottom: activeTab === 'database' ? '2px solid var(--accent)' : '2px solid transparent',
+                color: activeTab === 'database' ? 'var(--accent)' : 'var(--text-muted)',
+                background: 'transparent',
+                cursor: 'pointer'
+              }}
+            >
+              データベース
             </button>
           </div>
 
@@ -447,6 +529,110 @@ export default function SettingsModal({ apiKeys, subtitleSettings, aiPreferences
                     </ul>
                   </div>
                 </div>
+              </div>
+            </div>
+          )}
+
+          {/* データベースタブ */}
+          {activeTab === 'database' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+              <div>
+                <h3 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '0.75rem' }}>📊 データベース状態</h3>
+                
+                {dbReady === null && (
+                  <div className="card" style={{ padding: '1rem', textAlign: 'center' }}>
+                    <p style={{ fontSize: '12px', color: 'var(--text-muted)' }}>確認中...</p>
+                  </div>
+                )}
+
+                {dbReady === false && (
+                  <div className="card" style={{ padding: '1rem', background: 'rgba(239, 68, 68, 0.1)' }}>
+                    <p style={{ fontSize: '12px', color: 'rgb(239, 68, 68)', fontWeight: 600 }}>
+                      ⚠️ データベースに接続できません
+                    </p>
+                    <p style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '0.5rem' }}>
+                      DATABASE_URL環境変数が設定されていることを確認してください。
+                    </p>
+                  </div>
+                )}
+
+                {dbReady === true && dbStatus && (
+                  <div className="card" style={{ padding: '1rem' }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '1rem', textAlign: 'center' }}>
+                      <div>
+                        <div style={{ fontSize: '24px', fontWeight: 700, color: 'var(--accent)' }}>{dbStatus.projects}</div>
+                        <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>プロジェクト</div>
+                      </div>
+                      <div>
+                        <div style={{ fontSize: '24px', fontWeight: 700, color: 'var(--accent)' }}>{dbStatus.transcriptions}</div>
+                        <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>書き起こし</div>
+                      </div>
+                      <div>
+                        <div style={{ fontSize: '24px', fontWeight: 700, color: 'var(--accent)' }}>{dbStatus.properNouns}</div>
+                        <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>固有名詞</div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div>
+                <h3 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '0.75rem' }}>🔄 データマイグレーション</h3>
+                
+                <div className="card" style={{ padding: '1rem' }}>
+                  <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '1rem' }}>
+                    ブラウザのlocalStorageに保存されている既存のプロジェクトと固有名詞をデータベースに移行します。
+                    この操作は安全で、既存のDBデータには影響しません。
+                  </p>
+                  
+                  <button
+                    onClick={handleMigration}
+                    disabled={isMigrating || !dbReady}
+                    className="btn-primary"
+                    style={{ 
+                      width: '100%', 
+                      padding: '0.75rem', 
+                      fontSize: '13px', 
+                      fontWeight: 600,
+                      opacity: (isMigrating || !dbReady) ? 0.5 : 1
+                    }}
+                  >
+                    {isMigrating ? '移行中...' : '📦 localStorageからDBへ移行'}
+                  </button>
+
+                  {migrationResult && (
+                    <div style={{ marginTop: '1rem' }}>
+                      {migrationResult.error ? (
+                        <div style={{ padding: '0.75rem', background: 'rgba(239, 68, 68, 0.1)', borderRadius: '6px' }}>
+                          <p style={{ fontSize: '11px', color: 'rgb(239, 68, 68)' }}>
+                            エラー: {migrationResult.error}
+                          </p>
+                        </div>
+                      ) : (
+                        <div style={{ padding: '0.75rem', background: 'rgba(34, 197, 94, 0.1)', borderRadius: '6px' }}>
+                          <p style={{ fontSize: '12px', color: 'rgb(34, 197, 94)', fontWeight: 600 }}>
+                            ✓ 移行完了
+                          </p>
+                          <ul style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '0.5rem', marginLeft: '1rem' }}>
+                            <li>作成されたプロジェクト: {migrationResult.results?.projectsCreated || 0}</li>
+                            <li>スキップされたプロジェクト: {migrationResult.results?.projectsSkipped || 0}</li>
+                            <li>移行された固有名詞: {migrationResult.results?.properNounsCreated || 0}</li>
+                          </ul>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="card" style={{ padding: '0.75rem', backgroundColor: 'rgba(20, 20, 20, 0.3)' }}>
+                <p style={{ fontSize: '10px', fontWeight: 600, marginBottom: '0.5rem', color: 'var(--accent)' }}>💡 データベース設定について</p>
+                <ul style={{ fontSize: '10px', color: 'var(--text-muted)', lineHeight: 1.6, marginLeft: '1.25rem' }}>
+                  <li>PostgreSQLデータベースが必要です（Vercel Postgres / Supabase / Neon等）</li>
+                  <li>環境変数 DATABASE_URL を設定してください</li>
+                  <li>初回は <code>npx prisma db push</code> でスキーマを適用してください</li>
+                  <li>データはサーバー再起動後も保持されます</li>
+                </ul>
               </div>
             </div>
           )}

@@ -41,8 +41,27 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server'
-import { TranscriptionWord, SubtitleGenerationSettings, SubtitleEntry, SubtitleGenerationResult } from '@/lib/types'
+import { 
+  TranscriptionWord, 
+  SubtitleGenerationSettings, 
+  SubtitleEntry, 
+  SubtitleGenerationResult,
+  LanguageTimingConfig,
+  FrameRate,
+  TimingViolation,
+  SubtitleTimingValidation,
+  MovieSubtitleEntry,
+  SubtitlePlatform,
+  LineBreakPatternType,
+  SegmentSplitPatternType
+} from '@/lib/types'
 import { formatTimestampSRT, formatTimestampVTT } from '@/lib/utils'
+import { 
+  SUBTITLE_PRESETS, 
+  LINE_BREAK_PATTERNS, 
+  SEGMENT_SPLIT_PATTERNS,
+  getPresetById 
+} from '@/lib/subtitlePresets'
 
 export const runtime = 'nodejs'
 export const maxDuration = 300
@@ -51,19 +70,197 @@ interface SubtitleGenerationRequest {
   words: TranscriptionWord[]
   settings: SubtitleGenerationSettings
   language: 'en' | 'ja'
+  fps?: FrameRate
+  enableTimingValidation?: boolean
+  autoFixViolations?: boolean
+  includeSpeakerTags?: boolean
+  speakerMapping?: Record<string, string>  // speakerId -> characterName
+  // プリセット設定
+  presetId?: SubtitlePlatform             // プラットフォームプリセット
+  lineBreakPattern?: LineBreakPatternType // 改行パターン
+  segmentSplitPattern?: SegmentSplitPatternType // セグメント分割パターン
 }
 
-// 読み取り速度の定数（秒あたりの文字数）
+// プリセットからタイミング設定を取得
+function getTimingConfigFromPreset(presetId: SubtitlePlatform, fps: FrameRate): LanguageTimingConfig {
+  const preset = getPresetById(presetId)
+  if (!preset) {
+    // デフォルトのNetflix日本語設定
+    return TIMING_CONFIG['ja']
+  }
+  
+  return {
+    minDuration: preset.minDuration,
+    maxDuration: preset.maxDuration,
+    maxCPS: preset.maxCPS,
+    minGapFrames: preset.minGapFrames,
+    forbiddenGapRange: preset.forbiddenGapRange,
+    outExtensionFrames: preset.outExtensionFrames,
+    maxCharsPerLine: preset.maxCharsPerLine,
+  }
+}
+
+// ============================================
+// Netflix/業界標準 言語別タイミング設定
+// ============================================
+
+const TIMING_CONFIG: Record<'en' | 'ja', LanguageTimingConfig> = {
+  en: {
+    minDuration: 0.833,       // 5/6秒 = 833ms (20フレーム@24fps)
+    maxDuration: 7.0,         // 最大7秒
+    maxCPS: 20,               // 20文字/秒
+    minGapFrames: 2,          // 最小2フレーム
+    forbiddenGapRange: {      // 3-11フレームは禁止
+      min: 3,
+      max: 11,
+    },
+    outExtensionFrames: 12,   // OUT点延長: 最大12フレーム (0.5秒@24fps)
+    maxCharsPerLine: 42,
+  },
+  ja: {
+    minDuration: 0.5,         // 500ms (12フレーム@24fps)
+    maxDuration: 6.5,         // 最大6.5秒
+    maxCPS: 4,                // 4文字/秒
+    minGapFrames: 3,          // 最小3フレーム
+    outExtensionFrames: 12,   // OUT点延長: 最大12フレーム
+    maxCharsPerLine: 13,
+  },
+}
+
+// 読み取り速度の定数（秒あたりの文字数）- 後方互換性のため維持
 const READING_SPEED = {
   en: 20, // 英語: 20 CPS (characters per second)
   ja: 4,  // 日本語: 4文字/秒
 }
 
-// タイミング制約
+// フレームをに変換
+function framesToSeconds(frames: number, fps: FrameRate = 24): number {
+  return frames / fps
+}
+
+// 秒をフレームに変換
+function secondsToFrames(seconds: number, fps: FrameRate = 24): number {
+  return Math.round(seconds * fps)
+}
+
+// ============================================
+// 禁止ギャップルール (24fps)
+// 3-11フレームのギャップは禁止 → 2フレームに縮める
+// ============================================
+function normalizeGap(gap: number, fps: FrameRate, language: 'en' | 'ja'): number {
+  const config = TIMING_CONFIG[language]
+  const frames = gap * fps
+  
+  // 英語のみ禁止ギャップルール適用
+  if (config.forbiddenGapRange) {
+    const { min, max } = config.forbiddenGapRange
+    if (frames >= min && frames <= max) {
+      // 禁止範囲内のギャップは最小ギャップに正規化
+      return framesToSeconds(config.minGapFrames, fps)
+    }
+  }
+  
+  // 最小ギャップより短い場合は最小ギャップに
+  if (frames < config.minGapFrames) {
+    return framesToSeconds(config.minGapFrames, fps)
+  }
+  
+  return gap
+}
+
+// ============================================
+// OUT点延長ルール
+// 発話終了後、一定時間（最大12フレーム）まで字幕を延長表示
+// ============================================
+function applyOutExtension(
+  currentEndTime: number,
+  nextStartTime: number | null,
+  textLength: number,
+  language: 'en' | 'ja',
+  fps: FrameRate = 24
+): number {
+  const config = TIMING_CONFIG[language]
+  
+  // 読み取り時間に基づいた理想的な表示時間
+  const idealDuration = textLength / config.maxCPS
+  
+  // OUT点延長の最大値（秒）
+  const maxExtension = framesToSeconds(config.outExtensionFrames, fps)
+  
+  // 次の字幕との間隔を考慮
+  const minGap = framesToSeconds(config.minGapFrames, fps)
+  
+  if (nextStartTime !== null) {
+    // 次の字幕がある場合、ギャップを確保しつつ延長
+    const availableSpace = nextStartTime - currentEndTime - minGap
+    const extension = Math.min(maxExtension, Math.max(0, availableSpace))
+    return currentEndTime + extension
+  } else {
+    // 最後の字幕の場合、最大延長を適用
+    return currentEndTime + maxExtension
+  }
+}
+
+// 旧TIMINGオブジェクト（後方互換性）
+// 推奨: 新規コードでは SUBTITLE_PRESETS を使用してください
 const TIMING = {
-  minDuration: 0.833,  // 最小表示時間（秒）
-  maxDuration: 7,      // 最大表示時間（秒）
+  minDuration: 0.833,  // 最小表示時間（秒）- 英語デフォルト
+  maxDuration: 7,      // 最大表示時間（秒）- 英語デフォルト
   minGap: 0.083,       // 最小字幕間隔（2フレーム@24fps）
+}
+
+// プリセットベースの改行ルールを適用
+function applyLineBreakPattern(
+  text: string, 
+  patternId: LineBreakPatternType,
+  maxCharsPerLine: number
+): string[] {
+  const pattern = LINE_BREAK_PATTERNS[patternId]
+  if (!pattern) {
+    // デフォルトの改行処理
+    return splitIntoLines(text, maxCharsPerLine)
+  }
+  
+  const rules = pattern.rules
+  
+  // 日本語: 句読点なしモードの処理
+  if (rules.noPunctuationMode) {
+    text = text.replace(/、/g, ' ').replace(/。/g, '')
+  }
+  
+  // 単純な文字数ベースの分割（実際の実装ではAIを使用）
+  return splitIntoLines(text, maxCharsPerLine)
+}
+
+// 単純な行分割（ヘルパー関数）
+function splitIntoLines(text: string, maxCharsPerLine: number): string[] {
+  if (text.length <= maxCharsPerLine) {
+    return [text]
+  }
+  
+  // 日本語と英語を判定
+  const isJapanese = /[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FAF]/.test(text)
+  
+  if (isJapanese) {
+    // 日本語: 文字数で分割
+    const mid = Math.ceil(text.length / 2)
+    return [text.slice(0, mid), text.slice(mid)]
+  } else {
+    // 英語: スペースで分割
+    const words = text.split(' ')
+    let line1 = ''
+    let line2 = ''
+    
+    for (const word of words) {
+      if (line1.length + word.length + 1 <= maxCharsPerLine) {
+        line1 += (line1 ? ' ' : '') + word
+      } else {
+        line2 += (line2 ? ' ' : '') + word
+      }
+    }
+    
+    return line2 ? [line1, line2] : [line1]
+  }
 }
 
 // 日本語の句読点を処理（字幕表示用）
@@ -258,10 +455,171 @@ function calculateBreakScore(
   return score
 }
 
+// ============================================
+// タイミングバリデーション
+// ============================================
+function validateSubtitleTiming(
+  subtitles: SubtitleEntry[],
+  language: 'en' | 'ja',
+  fps: FrameRate = 24
+): SubtitleTimingValidation {
+  const config = TIMING_CONFIG[language]
+  const violations: TimingViolation[] = []
+  const minGap = framesToSeconds(config.minGapFrames, fps)
+  
+  let totalDuration = 0
+  let totalCPS = 0
+  let minDuration = Infinity
+  let maxDuration = 0
+  let totalGap = 0
+  let gapCount = 0
+
+  for (let i = 0; i < subtitles.length; i++) {
+    const subtitle = subtitles[i]
+    const next = i < subtitles.length - 1 ? subtitles[i + 1] : null
+    
+    const duration = subtitle.endTime - subtitle.startTime
+    const textLength = subtitle.text.length
+    const cps = textLength / duration
+
+    // 統計情報の収集
+    totalDuration += duration
+    totalCPS += cps
+    minDuration = Math.min(minDuration, duration)
+    maxDuration = Math.max(maxDuration, duration)
+
+    // === 負の表示時間チェック ===
+    if (duration <= 0) {
+      violations.push({
+        type: 'negative_duration',
+        severity: 'error',
+        subtitleIndex: i + 1,
+        message: `字幕 #${i + 1}: 表示時間が0以下です (${duration.toFixed(3)}秒)`,
+        details: { actual: duration, expected: config.minDuration, unit: 'seconds' },
+        autoFixable: true,
+        suggestedFix: { endTime: subtitle.startTime + config.minDuration },
+      })
+    }
+
+    // === 最小表示時間チェック ===
+    if (duration > 0 && duration < config.minDuration) {
+      violations.push({
+        type: 'min_duration',
+        severity: 'warning',
+        subtitleIndex: i + 1,
+        message: `字幕 #${i + 1}: 表示時間が短すぎます (${duration.toFixed(3)}秒 < ${config.minDuration}秒)`,
+        details: { actual: duration, expected: config.minDuration, unit: 'seconds' },
+        autoFixable: true,
+        suggestedFix: { endTime: subtitle.startTime + config.minDuration },
+      })
+    }
+
+    // === 最大表示時間チェック ===
+    if (duration > config.maxDuration) {
+      violations.push({
+        type: 'max_duration',
+        severity: 'warning',
+        subtitleIndex: i + 1,
+        message: `字幕 #${i + 1}: 表示時間が長すぎます (${duration.toFixed(3)}秒 > ${config.maxDuration}秒)`,
+        details: { actual: duration, expected: config.maxDuration, unit: 'seconds' },
+        autoFixable: true,
+        suggestedFix: { endTime: subtitle.startTime + config.maxDuration },
+      })
+    }
+
+    // === 読み取り速度チェック ===
+    if (cps > config.maxCPS) {
+      violations.push({
+        type: 'reading_speed',
+        severity: 'error',
+        subtitleIndex: i + 1,
+        message: `字幕 #${i + 1}: 読み取り速度が速すぎます (${cps.toFixed(1)} CPS > ${config.maxCPS} CPS)`,
+        details: { actual: cps, expected: config.maxCPS, unit: 'cps' },
+        autoFixable: false,
+      })
+    }
+
+    // === 文字数チェック ===
+    const lines = subtitle.lines || [subtitle.text]
+    for (const line of lines) {
+      if (line.length > config.maxCharsPerLine) {
+        violations.push({
+          type: 'char_limit',
+          severity: 'warning',
+          subtitleIndex: i + 1,
+          message: `字幕 #${i + 1}: 1行あたりの文字数が多すぎます (${line.length}文字 > ${config.maxCharsPerLine}文字)`,
+          details: { actual: line.length, expected: config.maxCharsPerLine, unit: 'characters' },
+          autoFixable: false,
+        })
+        break
+      }
+    }
+
+    // === ギャップチェック ===
+    if (next) {
+      const gap = next.startTime - subtitle.endTime
+      totalGap += gap
+      gapCount++
+
+      // 重複チェック
+      if (gap < 0) {
+        violations.push({
+          type: 'overlap',
+          severity: 'error',
+          subtitleIndex: i + 1,
+          message: `字幕 #${i + 1} と #${i + 2}: 時間が重複しています (${Math.abs(gap).toFixed(3)}秒)`,
+          details: { actual: gap, expected: minGap, unit: 'seconds' },
+          autoFixable: true,
+          suggestedFix: { endTime: next.startTime - minGap },
+        })
+      }
+
+      // 禁止ギャップチェック（英語のみ）
+      if (config.forbiddenGapRange) {
+        const gapFrames = gap * fps
+        const { min, max } = config.forbiddenGapRange
+        if (gapFrames >= min && gapFrames <= max) {
+          violations.push({
+            type: 'forbidden_gap',
+            severity: 'warning',
+            subtitleIndex: i + 1,
+            message: `字幕 #${i + 1} と #${i + 2}: 禁止ギャップ範囲です (${gapFrames.toFixed(1)}フレーム, 許容: <${min}または>${max}フレーム)`,
+            details: { actual: gapFrames, expected: config.minGapFrames, unit: 'frames' },
+            autoFixable: true,
+            suggestedFix: { endTime: next.startTime - framesToSeconds(config.minGapFrames, fps) },
+          })
+        }
+      }
+    }
+  }
+
+  const totalCount = subtitles.length
+  const errorCount = violations.filter(v => v.severity === 'error').length
+  const warningCount = violations.filter(v => v.severity === 'warning').length
+
+  return {
+    isValid: errorCount === 0,
+    totalViolations: violations.length,
+    errors: errorCount,
+    warnings: warningCount,
+    violations,
+    statistics: {
+      totalSubtitles: totalCount,
+      avgDuration: totalCount > 0 ? totalDuration / totalCount : 0,
+      avgCPS: totalCount > 0 ? totalCPS / totalCount : 0,
+      minDuration: minDuration === Infinity ? 0 : minDuration,
+      maxDuration,
+      avgGap: gapCount > 0 ? totalGap / gapCount : 0,
+    },
+  }
+}
+
 // 文脈を考慮した単語グループ化（字幕生成のコアロジック）
 async function groupWordsIntoSubtitles(
   words: TranscriptionWord[],
-  settings: SubtitleGenerationSettings
+  settings: SubtitleGenerationSettings,
+  fps: FrameRate = 24,
+  autoFix: boolean = true
 ): Promise<SubtitleEntry[]> {
   const subtitles: SubtitleEntry[] = []
   const maxCharsTotal = settings.maxCharsPerLine * settings.maxLines
@@ -363,7 +721,8 @@ async function groupWordsIntoSubtitles(
   }
 
   // === タイミング調整：字幕間の重なりや間隔を最適化 ===
-  return adjustSubtitleTimings(subtitles)
+  // 言語別のタイミングルールを適用
+  return adjustSubtitleTimings(subtitles, settings.language, fps, autoFix)
 }
 
 // 字幕エントリを作成
@@ -410,84 +769,120 @@ async function createSubtitleEntry(
 }
 
 // 字幕のタイミングを調整（文脈を考慮した重なりや間隔の最適化）
-function adjustSubtitleTimings(subtitles: SubtitleEntry[]): SubtitleEntry[] {
+// language と fps パラメータを追加して言語別ルールを適用
+function adjustSubtitleTimings(
+  subtitles: SubtitleEntry[], 
+  language: 'en' | 'ja' = 'en',
+  fps: FrameRate = 24,
+  autoFix: boolean = true
+): SubtitleEntry[] {
+  const config = TIMING_CONFIG[language]
+  const minGap = framesToSeconds(config.minGapFrames, fps)
+  
   // === タイミング調整戦略（字幕レギュレーション準拠） ===
   // 1. 字幕間の最小間隔を確保（視覚的な区切りの明確化）
   // 2. 読み取り速度に基づく最小/最大表示時間の遵守
-  // 3. 文脈の連続性を維持しつつ、視覚的な快適さを確保
-  // 4. 前後の字幕との自然な流れを保つ
+  // 3. 禁止ギャップ（3-11フレーム@24fps、英語のみ）の正規化
+  // 4. OUT点延長ルールの適用
+  // 5. 前後の字幕との自然な流れを保つ
 
-  for (let i = 0; i < subtitles.length - 1; i++) {
+  for (let i = 0; i < subtitles.length; i++) {
     const current = subtitles[i]
-    const next = subtitles[i + 1]
+    const next = i < subtitles.length - 1 ? subtitles[i + 1] : null
+    const prev = i > 0 ? subtitles[i - 1] : null
 
-    // === 字幕間のギャップ分析 ===
-    const actualGap = next.startTime - current.endTime
+    // === OUT点延長ルールの適用 ===
+    // 発話終了後、最大12フレームまで字幕を延長表示
+    if (autoFix) {
+      const nextStartTime = next ? next.startTime : null
+      current.endTime = applyOutExtension(
+        current.endTime,
+        nextStartTime,
+        current.text.length,
+        language,
+        fps
+      )
+    }
 
-    // 現在の字幕が次の字幕と重なっている、または間隔が短すぎる場合
-    if (actualGap < TIMING.minGap) {
-      // === 調整戦略1: 現在の字幕の終了時刻を調整 ===
-      const originalEndTime = current.endTime
-      current.endTime = next.startTime - TIMING.minGap
+    if (next) {
+      // === 字幕間のギャップ分析 ===
+      let actualGap = next.startTime - current.endTime
 
-      // 調整後の表示時間が最小表示時間を下回るか確認
-      const adjustedDuration = current.endTime - current.startTime
-
-      if (adjustedDuration < TIMING.minDuration) {
-        // === 調整戦略2: 開始時刻を前にずらす（前の字幕との兼ね合いを考慮） ===
-        const adjustment = TIMING.minDuration - adjustedDuration
-
-        if (i > 0) {
-          const prev = subtitles[i - 1]
-          const availableSpace = current.startTime - prev.endTime - TIMING.minGap
-          const shift = Math.min(adjustment, Math.max(0, availableSpace))
-
-          if (shift > 0) {
-            current.startTime -= shift
-          } else {
-            // 前にずらせない場合は、次の字幕の開始時刻を調整
-            const pushForward = adjustment - shift
-            next.startTime = Math.min(next.startTime + pushForward, next.endTime - TIMING.minDuration)
-            current.endTime = next.startTime - TIMING.minGap
-          }
-        } else {
-          // 最初の字幕の場合は開始時刻を0.5秒前にずらす
-          current.startTime = Math.max(0, current.startTime - adjustment)
+      // === 禁止ギャップルールの適用（英語のみ） ===
+      // 3-11フレームのギャップは2フレームに正規化
+      if (autoFix) {
+        const normalizedGap = normalizeGap(actualGap, fps, language)
+        if (normalizedGap !== actualGap) {
+          // ギャップを正規化するため、現在の字幕の終了時刻を調整
+          current.endTime = next.startTime - normalizedGap
+          actualGap = normalizedGap
         }
       }
-    } else if (actualGap > 2.0) {
-      // === ギャップが大きすぎる場合の処理（文脈の連続性を考慮） ===
-      // 2秒以上のギャップがある場合、現在の字幕を少し延長して
-      // 視覚的な繋がりを改善（ただし最大表示時間は超えない）
-      const currentDuration = current.endTime - current.startTime
-      const maxExtension = Math.min(
-        TIMING.maxDuration - currentDuration,
-        actualGap - TIMING.minGap * 2
-      )
 
-      if (maxExtension > 0) {
-        // 最大1秒まで延長
-        const extension = Math.min(maxExtension, 1.0)
-        current.endTime += extension
+      // 現在の字幕が次の字幕と重なっている、または間隔が短すぎる場合
+      if (actualGap < minGap) {
+        // === 調整戦略1: 現在の字幕の終了時刻を調整 ===
+        current.endTime = next.startTime - minGap
+
+        // 調整後の表示時間が最小表示時間を下回るか確認
+        const adjustedDuration = current.endTime - current.startTime
+
+        if (adjustedDuration < config.minDuration && autoFix) {
+          // === 調整戦略2: 開始時刻を前にずらす（前の字幕との兼ね合いを考慮） ===
+          const adjustment = config.minDuration - adjustedDuration
+
+          if (prev) {
+            const prevMinGap = framesToSeconds(config.minGapFrames, fps)
+            const availableSpace = current.startTime - prev.endTime - prevMinGap
+            const shift = Math.min(adjustment, Math.max(0, availableSpace))
+
+            if (shift > 0) {
+              current.startTime -= shift
+            } else {
+              // 前にずらせない場合は、次の字幕の開始時刻を調整
+              const pushForward = adjustment - shift
+              next.startTime = Math.min(next.startTime + pushForward, next.endTime - config.minDuration)
+              current.endTime = next.startTime - minGap
+            }
+          } else {
+            // 最初の字幕の場合は開始時刻を0.5秒前にずらす
+            current.startTime = Math.max(0, current.startTime - adjustment)
+          }
+        }
+      } else if (actualGap > 2.0 && autoFix) {
+        // === ギャップが大きすぎる場合の処理（文脈の連続性を考慮） ===
+        // 2秒以上のギャップがある場合、現在の字幕を少し延長して
+        // 視覚的な繋がりを改善（ただし最大表示時間は超えない）
+        const currentDuration = current.endTime - current.startTime
+        const maxExtension = Math.min(
+          config.maxDuration - currentDuration,
+          actualGap - minGap * 2
+        )
+
+        if (maxExtension > 0) {
+          // 最大1秒まで延長
+          const extension = Math.min(maxExtension, 1.0)
+          current.endTime += extension
+        }
       }
     }
 
     // === 最大表示時間の制限 ===
     const duration = current.endTime - current.startTime
-    if (duration > TIMING.maxDuration) {
-      current.endTime = current.startTime + TIMING.maxDuration
+    if (duration > config.maxDuration && autoFix) {
+      current.endTime = current.startTime + config.maxDuration
     }
 
     // === 読み取り速度に基づく表示時間の検証 ===
     // 各字幕が十分な読み取り時間を確保しているか確認
     const textLength = current.text.length
-    const requiredDuration = textLength / READING_SPEED.en // 汎用的な計算
+    const requiredDuration = textLength / config.maxCPS
     const finalDuration = current.endTime - current.startTime
 
-    if (finalDuration < requiredDuration * 0.7) {
+    if (finalDuration < requiredDuration * 0.7 && next && autoFix) {
       // 表示時間が不足している場合、可能な範囲で延長
       const neededExtension = requiredDuration * 0.7 - finalDuration
-      const maxPossibleExtension = next.startTime - TIMING.minGap - current.endTime
+      const maxPossibleExtension = next.startTime - minGap - current.endTime
 
       if (maxPossibleExtension > 0) {
         const extension = Math.min(neededExtension, maxPossibleExtension)
@@ -502,14 +897,14 @@ function adjustSubtitleTimings(subtitles: SubtitleEntry[]): SubtitleEntry[] {
     const duration = last.endTime - last.startTime
 
     // 最大表示時間チェック
-    if (duration > TIMING.maxDuration) {
-      last.endTime = last.startTime + TIMING.maxDuration
+    if (duration > config.maxDuration && autoFix) {
+      last.endTime = last.startTime + config.maxDuration
     }
 
     // 最小表示時間チェック
-    if (duration < TIMING.minDuration) {
+    if (duration < config.minDuration && autoFix) {
       // 最後の字幕は後ろに延長できる
-      last.endTime = last.startTime + TIMING.minDuration
+      last.endTime = last.startTime + config.minDuration
     }
   }
 
@@ -543,10 +938,72 @@ function generateVTTContent(subtitles: SubtitleEntry[]): string {
   return content
 }
 
+// 話者タグ付きSRTコンテンツを生成（Netflix形式）
+function generateSRTContentWithSpeakers(
+  subtitles: SubtitleEntry[],
+  speakerMapping?: Record<string, string>,
+  words?: TranscriptionWord[],
+  speakerTagFormat: 'brackets' | 'dash' | 'colon' = 'brackets'
+): string {
+  let content = ''
+
+  // 各字幕の話者を特定するためのヘルパー
+  const getSpeakerForSubtitle = (subtitle: SubtitleEntry, index: number): string | undefined => {
+    if (!words || !speakerMapping) return undefined
+    
+    // 字幕の時間範囲内にある最初の単語の話者を使用
+    const wordInRange = words.find(
+      w => w.start >= subtitle.startTime && w.start < subtitle.endTime && w.speaker
+    )
+    
+    if (wordInRange?.speaker && speakerMapping[wordInRange.speaker]) {
+      return speakerMapping[wordInRange.speaker]
+    }
+    return undefined
+  }
+
+  for (let i = 0; i < subtitles.length; i++) {
+    const subtitle = subtitles[i]
+    const speakerName = getSpeakerForSubtitle(subtitle, i)
+    
+    content += `${subtitle.index}\n`
+    content += `${formatTimestampSRT(subtitle.startTime)} --> ${formatTimestampSRT(subtitle.endTime)}\n`
+    
+    // 話者タグを追加
+    if (speakerName) {
+      const lines = subtitle.lines.join('\n')
+      switch (speakerTagFormat) {
+        case 'brackets':
+          content += `[${speakerName}] ${lines}`
+          break
+        case 'dash':
+          content += `- ${speakerName}: ${lines}`
+          break
+        case 'colon':
+          content += `${speakerName.toUpperCase()}: ${lines}`
+          break
+      }
+    } else {
+      content += subtitle.lines.join('\n')
+    }
+    content += '\n\n'
+  }
+
+  return content
+}
+
 export async function POST(request: NextRequest) {
   try {
     const body: SubtitleGenerationRequest = await request.json()
-    const { words, settings } = body
+    const { 
+      words, 
+      settings, 
+      fps = 24, 
+      enableTimingValidation = true,
+      autoFixViolations = true,
+      includeSpeakerTags = false,
+      speakerMapping
+    } = body
 
     if (!words || words.length === 0) {
       return NextResponse.json(
@@ -560,21 +1017,36 @@ export async function POST(request: NextRequest) {
     }
 
     console.log(`Generating subtitles for ${words.length} words...`)
+    console.log(`Language: ${settings.language}, FPS: ${fps}, Auto-fix: ${autoFixViolations}`)
 
-    // 単語を字幕エントリにグループ化
-    const subtitles = await groupWordsIntoSubtitles(words, settings)
+    // 単語を字幕エントリにグループ化（言語別タイミングルール適用）
+    const subtitles = await groupWordsIntoSubtitles(words, settings, fps as FrameRate, autoFixViolations)
 
     // SRTとVTTコンテンツを生成
-    const srtContent = generateSRTContent(subtitles)
+    let srtContent: string
+    if (includeSpeakerTags && speakerMapping) {
+      srtContent = generateSRTContentWithSpeakers(subtitles, speakerMapping, words, 'brackets')
+    } else {
+      srtContent = generateSRTContent(subtitles)
+    }
     const vttContent = generateVTTContent(subtitles)
+
+    // タイミングバリデーション
+    let validation: SubtitleTimingValidation | undefined
+    if (enableTimingValidation) {
+      validation = validateSubtitleTiming(subtitles, settings.language, fps as FrameRate)
+      console.log(`Validation: ${validation.isValid ? 'PASSED' : 'FAILED'} (${validation.errors} errors, ${validation.warnings} warnings)`)
+    }
 
     console.log(`Generated ${subtitles.length} subtitle entries`)
 
-    const result: SubtitleGenerationResult = {
+    const result = {
       success: true,
       subtitles,
       srtContent,
       vttContent,
+      validation,
+      timingConfig: TIMING_CONFIG[settings.language],
     }
 
     return NextResponse.json(result)
