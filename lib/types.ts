@@ -109,6 +109,10 @@ export interface AIPreferences {
   openaiModel: string;
   claudeModel: string;
   geminiModel: string;
+  // Geminiモデルの使い分け
+  geminiModelScript: string;    // 脚本分析・キャラクター抽出用（高機能）
+  geminiModelTranslate: string;  // 翻訳用（標準）
+  geminiModelLight: string;      // 固有名詞抽出等（軽量・無料）
 }
 
 // 字幕設定の型定義（言語別）

@@ -56,6 +56,9 @@ export default function SettingsModal({ apiKeys, subtitleSettings, aiPreferences
   const [openaiModel, setOpenaiModel] = useState(aiPreferences.openaiModel)
   const [claudeModel, setClaudeModel] = useState(aiPreferences.claudeModel)
   const [geminiModel, setGeminiModel] = useState(aiPreferences.geminiModel)
+  const [geminiModelScript, setGeminiModelScript] = useState(aiPreferences.geminiModelScript || 'gemini-1.5-pro')
+  const [geminiModelTranslate, setGeminiModelTranslate] = useState(aiPreferences.geminiModelTranslate || aiPreferences.geminiModel)
+  const [geminiModelLight, setGeminiModelLight] = useState(aiPreferences.geminiModelLight || 'gemini-2.0-flash-exp')
 
   // Subtitle Settings state
   const [currentLanguage, setCurrentLanguage] = useState<'en' | 'ja'>(subtitleSettings.currentLanguage)
@@ -138,6 +141,9 @@ export default function SettingsModal({ apiKeys, subtitleSettings, aiPreferences
       openaiModel,
       claudeModel,
       geminiModel,
+      geminiModelScript,
+      geminiModelTranslate,
+      geminiModelLight,
     })
   }
 
@@ -311,7 +317,7 @@ export default function SettingsModal({ apiKeys, subtitleSettings, aiPreferences
                       value={geminiModel}
                       onChange={(e) => setGeminiModel(e.target.value)}
                       className="select"
-                      style={{ fontSize: '11px' }}
+                      style={{ fontSize: '11px', marginBottom: '0.5rem' }}
                     >
                       {GEMINI_MODELS.map((model) => (
                         <option key={model.value} value={model.value}>
@@ -319,6 +325,54 @@ export default function SettingsModal({ apiKeys, subtitleSettings, aiPreferences
                         </option>
                       ))}
                     </select>
+                    <div style={{ fontSize: '10px', color: 'var(--text-muted)', marginTop: '0.5rem', paddingTop: '0.5rem', borderTop: '1px solid var(--border)' }}>
+                      <p style={{ marginBottom: '0.25rem', fontWeight: 600 }}>用途別モデル選択:</p>
+                      <div style={{ marginBottom: '0.5rem' }}>
+                        <label style={{ fontSize: '9px', display: 'block', marginBottom: '0.25rem' }}>脚本分析モデル（高機能推奨）:</label>
+                        <select
+                          value={geminiModelScript}
+                          onChange={(e) => setGeminiModelScript(e.target.value)}
+                          className="select"
+                          style={{ fontSize: '10px', width: '100%' }}
+                        >
+                          {GEMINI_MODELS.filter(m => m.value.includes('pro') || m.value.includes('flash')).map((model) => (
+                            <option key={model.value} value={model.value}>
+                              {model.label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div style={{ marginBottom: '0.5rem' }}>
+                        <label style={{ fontSize: '9px', display: 'block', marginBottom: '0.25rem' }}>翻訳モデル（標準）:</label>
+                        <select
+                          value={geminiModelTranslate}
+                          onChange={(e) => setGeminiModelTranslate(e.target.value)}
+                          className="select"
+                          style={{ fontSize: '10px', width: '100%' }}
+                        >
+                          {GEMINI_MODELS.map((model) => (
+                            <option key={model.value} value={model.value}>
+                              {model.label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label style={{ fontSize: '9px', display: 'block', marginBottom: '0.25rem' }}>軽量処理モデル（無料/安価）:</label>
+                        <select
+                          value={geminiModelLight}
+                          onChange={(e) => setGeminiModelLight(e.target.value)}
+                          className="select"
+                          style={{ fontSize: '10px', width: '100%' }}
+                        >
+                          {GEMINI_MODELS.filter(m => m.value.includes('flash') || m.value.includes('exp')).map((model) => (
+                            <option key={model.value} value={model.value}>
+                              {model.label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
                   </div>
 
                   {/* OpenAI */}

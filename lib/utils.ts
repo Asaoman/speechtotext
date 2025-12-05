@@ -198,6 +198,9 @@ export const DEFAULT_AI_PREFERENCES: AIPreferences = {
   openaiModel: 'gpt-4o-mini', // OpenAIで最もコスパが良い
   claudeModel: 'claude-3-5-sonnet-20241022', // Claudeで最もコスパが良い
   geminiModel: 'gemini-2.5-flash-lite', // 最新の安価モデル（入力$0.10/1M tokens、出力$0.40/1M tokens）
+  geminiModelScript: 'gemini-1.5-pro', // 脚本分析用（高機能）
+  geminiModelTranslate: 'gemini-2.5-flash-lite', // 翻訳用（標準）
+  geminiModelLight: 'gemini-2.0-flash-exp', // 軽量処理用（無料）
 };
 
 // ローカルストレージ操作

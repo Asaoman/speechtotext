@@ -11,6 +11,7 @@ datasource db {
   // PostgreSQL (production): provider = "postgresql"
   // Note: URL is configured in prisma.config.ts (Prisma 7+)
   provider = "sqlite"
+  // url is configured in prisma.config.ts for Prisma 7+
 }
 
 // ============================================

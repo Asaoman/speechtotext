@@ -4,6 +4,7 @@ import prisma from '@/lib/prisma'
 // POST: localStorageからDBへのマイグレーション
 export async function POST(request: NextRequest) {
   try {
+
     const body = await request.json()
     const { projects, dictionaries, dictionaryEntries } = body
 
@@ -87,6 +88,7 @@ export async function POST(request: NextRequest) {
 // GET: マイグレーション状態確認
 export async function GET() {
   try {
+
     const [projectCount, properNounCount, transcriptionCount] = await Promise.all([
       prisma.project.count(),
       prisma.properNoun.count(),

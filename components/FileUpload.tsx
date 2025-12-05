@@ -22,6 +22,8 @@ export default function FileUpload({
   const [numSpeakers, setNumSpeakers] = useState<string>('')
   const [error, setError] = useState<string>('')
   const [isDragging, setIsDragging] = useState<boolean>(false)
+  const [progress, setProgress] = useState<number>(0)
+  const [progressStep, setProgressStep] = useState<string>('')
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const validateAndSetFile = (file: File) => {
@@ -88,6 +90,8 @@ export default function FileUpload({
 
     setIsTranscribing(true)
     setError('')
+    setProgress(0)
+    setProgressStep('ファイルをアップロード中...')
 
     try {
       const formData = new FormData()
@@ -110,10 +114,16 @@ export default function FileUpload({
         }
       }
 
+      setProgress(20)
+      setProgressStep(service === 'whisperx' ? 'WhisperXで処理中...' : service === 'openai' ? 'OpenAI Whisper APIで処理中...' : 'ElevenLabs Scribe APIで処理中...')
+
       const response = await fetch('/api/transcribe', {
         method: 'POST',
         body: formData,
       })
+
+      setProgress(70)
+      setProgressStep('レスポンスを処理中...')
 
       if (!response.ok) {
         // レスポンスがJSONでない場合（HTMLエラーページなど）を処理
@@ -131,12 +141,25 @@ export default function FileUpload({
         }
       }
 
+      setProgress(90)
+      setProgressStep('結果を読み込み中...')
+
       const result = await response.json()
+      
+      setProgress(100)
+      setProgressStep('完了')
+      
       onTranscriptionComplete(result)
     } catch (err: any) {
       setError(err.message || '文字起こし中にエラーが発生しました')
+      setProgress(0)
+      setProgressStep('')
     } finally {
-      setIsTranscribing(false)
+      setTimeout(() => {
+        setIsTranscribing(false)
+        setProgress(0)
+        setProgressStep('')
+      }, 1000)
     }
   }
 
@@ -246,6 +269,30 @@ export default function FileUpload({
         <div className="card" style={{ padding: '0.75rem', marginBottom: '1rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <div style={{ fontSize: '12px' }}>{selectedFile.name}</div>
           <button onClick={() => setSelectedFile(null)} className="btn" style={{ padding: '0.25rem 0.5rem', fontSize: '11px' }}>削除</button>
+        </div>
+      )}
+
+      {/* 進行状況表示 */}
+      {isTranscribing && (
+        <div style={{ marginBottom: '1rem', padding: '0.75rem', backgroundColor: 'var(--bg-subtle)', borderRadius: '6px', border: '1px solid var(--border)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+            <span style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text)' }}>文字起こし処理中</span>
+            <span style={{ fontSize: '11px', color: 'var(--accent)' }}>{progress}%</span>
+          </div>
+          <div style={{ width: '100%', height: '6px', backgroundColor: 'var(--border)', borderRadius: '3px', overflow: 'hidden' }}>
+            <div 
+              style={{ 
+                width: `${progress}%`, 
+                height: '100%', 
+                backgroundColor: 'var(--accent)', 
+                transition: 'width 0.3s ease',
+                borderRadius: '3px'
+              }} 
+            />
+          </div>
+          {progressStep && (
+            <p style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '0.5rem' }}>{progressStep}</p>
+          )}
         </div>
       )}
 

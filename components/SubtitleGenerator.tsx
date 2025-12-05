@@ -432,7 +432,7 @@ export default function SubtitleGenerator({ transcriptionResult, subtitleSetting
     ? aiPreferences.openaiModel
     : service === 'claude'
     ? aiPreferences.claudeModel
-    : aiPreferences.geminiModel
+    : (aiPreferences.geminiModelTranslate || aiPreferences.geminiModel)
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>

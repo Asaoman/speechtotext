@@ -114,6 +114,11 @@ export default function Home() {
     setShowHistory(false)
   }, [])
 
+  // 映画字幕プロジェクト読み込み完了時のコールバック
+  const handleMovieProjectLoaded = useCallback(() => {
+    setMovieProjectIdToLoad(null)
+  }, [])
+
   const handleStartProofreading = () => {
     if (transcriptionResult) {
       setNavigatedFromTranscription(true)

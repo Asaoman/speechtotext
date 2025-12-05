@@ -20,7 +20,7 @@ export function useProject() {
 
   // プロジェクト読み込み
   useEffect(() => {
-    loadProjects()
+    loadProjects().catch(console.error)
   }, [])
 
   // コンテキスト自動保存（500ms debounce）
@@ -33,8 +33,36 @@ export function useProject() {
     }
   }, [customContext, selectedProjectId])
 
-  const loadProjects = () => {
-    const loadedProjects = storage.getProjects()
+  const loadProjects = async () => {
+    let loadedProjects = storage.getProjects()
+    
+    // localStorageが空の場合、データベースから復元を試みる
+    if (loadedProjects.length === 0) {
+      try {
+        const response = await fetch('/api/projects')
+        if (response.ok) {
+          const dbProjects = await response.json()
+          if (dbProjects && dbProjects.length > 0) {
+            // データベースのプロジェクトをlocalStorage形式に変換
+            const restoredProjects: Project[] = dbProjects.map((p: any) => ({
+              id: p.id,
+              name: p.name,
+              customContext: p.customContext || '',
+              created_at: p.createdAt || new Date().toISOString(),
+              updated_at: p.updatedAt || new Date().toISOString(),
+            }))
+            
+            // localStorageに保存
+            storage.setProjects(restoredProjects)
+            loadedProjects = restoredProjects
+            console.log(`データベースから${restoredProjects.length}個のプロジェクトを復元しました`)
+          }
+        }
+      } catch (error) {
+        console.error('データベースからのプロジェクト復元に失敗:', error)
+      }
+    }
+    
     setProjects(loadedProjects)
 
     // 現在のプロジェクトIDを取得

@@ -13,7 +13,8 @@ import {
   ProperNounExtractionResult,
   ProperNounCategory 
 } from '@/lib/types'
-import { v4 as uuidv4 } from 'uuid'
+// Dynamic import for uuid to avoid Next.js build issues
+const { v4: uuidv4 } = require('uuid')
 
 export const runtime = 'nodejs'
 export const maxDuration = 120
@@ -66,10 +67,11 @@ async function extractWithGemini(
   text: string,
   language: 'en' | 'ja',
   sourceType: string,
-  apiKey: string
+  apiKey: string,
+  modelName?: string
 ): Promise<ExtractedProperNoun[]> {
   const genAI = new GoogleGenerativeAI(apiKey)
-  const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash-lite' })
+  const model = genAI.getGenerativeModel({ model: modelName || 'gemini-2.0-flash-exp' })
 
   const prompt = buildExtractionPrompt(text, language, sourceType)
 
@@ -195,8 +197,8 @@ function extractTextFromSRT(srtContent: string): string {
 
 export async function POST(request: NextRequest) {
   try {
-    const body: ProperNounExtractionRequest & { apiKey: string } = await request.json()
-    const { text, sourceType, language, existingNouns = [], apiKey } = body
+    const body: ProperNounExtractionRequest & { apiKey: string; geminiModelLight?: string } = await request.json()
+    const { text, sourceType, language, existingNouns = [], apiKey, geminiModelLight } = body
 
     if (!text || !text.trim()) {
       return NextResponse.json(
@@ -221,12 +223,14 @@ export async function POST(request: NextRequest) {
     console.log(`Extracting proper nouns from ${sourceType} (${language})...`)
     console.log(`Text length: ${processedText.length} characters`)
 
-    // Geminiで抽出
+    // Geminiで抽出（軽量モデルを使用）
+    const modelName = geminiModelLight || 'gemini-2.0-flash-exp'
     const extractedNouns = await extractWithGemini(
       processedText,
       language,
       sourceType,
-      apiKey
+      apiKey,
+      modelName
     )
 
     console.log(`Extracted ${extractedNouns.length} proper nouns`)

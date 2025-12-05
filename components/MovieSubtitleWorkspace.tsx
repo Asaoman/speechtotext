@@ -265,7 +265,7 @@ export default function MovieSubtitleWorkspace({ apiKeys, projectId }: MovieSubt
       setCharacters(chars)
 
       // セリフにキャラクターを紐付け
-      const assignmentMap = new Map(
+      const assignmentMap = new Map<number, { characterId: string; characterName: string; confidence?: number }>(
         (data.assignments || []).map((a: any) => [a.index, { characterId: a.characterId, characterName: a.characterName, confidence: a.confidence }])
       )
       
@@ -430,8 +430,8 @@ export default function MovieSubtitleWorkspace({ apiKeys, projectId }: MovieSubt
         if (!data.success) throw new Error(data.error)
 
         // 翻訳結果を反映
-        const translationMap = new Map(
-          (data.translations || []).map((t: any) => [t.index, t.translatedText])
+        const translationMap = new Map<number, string>(
+          (data.translations || []).map((t: any) => [t.index, t.translatedText || ''])
         )
 
         setDialogues(prev => prev.map(d => {
@@ -460,19 +460,23 @@ export default function MovieSubtitleWorkspace({ apiKeys, projectId }: MovieSubt
 
     let content: string
     let filename: string
+    let mimeType: string
 
     if (format === 'vtt') {
       content = generateVTT(dialogues)
       filename = 'subtitles.vtt'
+      mimeType = 'text/vtt'
     } else if (format === 'srt-speakers') {
       content = generateSRT(dialogues, true)
       filename = 'subtitles_with_speakers.srt'
+      mimeType = 'application/x-subrip'
     } else {
       content = generateSRT(dialogues, false)
       filename = 'subtitles.srt'
+      mimeType = 'application/x-subrip'
     }
 
-    downloadFile(content, filename)
+    downloadFile(content, filename, mimeType)
   }
 
   // 統計

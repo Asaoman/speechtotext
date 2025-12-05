@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { GoogleGenerativeAI } from '@google/generative-ai'
+import { ExtractedProperNoun, ProperNounCategory } from '@/lib/types'
+// Dynamic import for uuid to avoid Next.js build issues
+const { v4: uuidv4 } = require('uuid')
 
 // 分析結果の型定義
 interface ScriptAnalysisResult {
@@ -22,6 +25,7 @@ interface ScriptAnalysisResult {
       sampleDialogues: string[]
     }[]
   }
+  properNouns?: ExtractedProperNoun[]
   error?: string
 }
 
@@ -42,9 +46,105 @@ function detectLanguage(text: string): 'en' | 'ja' | 'other' {
   return 'en'
 }
 
+// 固有名詞抽出用のプロンプト
+function buildProperNounPrompt(text: string, language: 'en' | 'ja'): string {
+  const langName = language === 'ja' ? '日本語' : '英語'
+  return `あなたは映画/動画の固有名詞抽出の専門家です。
+以下の脚本テキスト（${langName}）から固有名詞を抽出してください。
+
+## 抽出対象:
+- 人名（登場人物の名前）
+- 地名（場所、都市、国など）
+- 組織名（会社、団体、学校など）
+- 作品名（映画、本、音楽など）
+- 専門用語（その作品特有の用語）
+
+## 脚本テキスト:
+${text.slice(0, 15000)}${text.length > 15000 ? '\n...(以下省略)' : ''}
+
+## 出力形式（JSON配列）:
+[
+  {
+    "term": "固有名詞",
+    "category": "person|place|organization|work|other",
+    "reading": "読み方（日本語の場合のみ）",
+    "variants": ["別表記1", "別表記2"],
+    "context": "使用されている文脈",
+    "confidence": 0.9
+  }
+]
+
+必ず有効なJSON配列のみを出力してください。`
+}
+
+// 固有名詞抽出関数
+async function extractProperNouns(
+  text: string,
+  language: 'en' | 'ja',
+  apiKey: string,
+  modelName: string
+): Promise<ExtractedProperNoun[]> {
+  const genAI = new GoogleGenerativeAI(apiKey)
+  const model = genAI.getGenerativeModel({ model: modelName })
+  const prompt = buildProperNounPrompt(text, language)
+
+  try {
+    const result = await model.generateContent({
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      generationConfig: {
+        temperature: 0.3,
+        maxOutputTokens: 8192,
+      },
+    })
+
+    const responseText = result.response.text()
+    
+    // JSONを抽出
+    let jsonStr = responseText
+    const jsonMatch = responseText.match(/```(?:json)?\s*([\s\S]*?)```/)
+    if (jsonMatch) {
+      jsonStr = jsonMatch[1].trim()
+    } else {
+      const startIdx = responseText.indexOf('[')
+      const endIdx = responseText.lastIndexOf(']')
+      if (startIdx !== -1 && endIdx !== -1) {
+        jsonStr = responseText.slice(startIdx, endIdx + 1)
+      }
+    }
+
+    let parsed
+    try {
+      parsed = JSON.parse(jsonStr)
+    } catch (parseError: any) {
+      console.error('[analyze-script] Failed to parse proper nouns JSON:', jsonStr.substring(0, 500))
+      console.error('[analyze-script] Parse error:', parseError)
+      return []
+    }
+    
+    if (!Array.isArray(parsed)) {
+      console.warn('[analyze-script] Proper nouns response is not an array:', typeof parsed)
+      return []
+    }
+
+    return parsed.map((item: any) => ({
+      id: uuidv4(),
+      term: item.term || '',
+      category: (item.category || 'other') as ProperNounCategory,
+      reading: item.reading || undefined,
+      variants: Array.isArray(item.variants) ? item.variants : [],
+      context: item.context || '',
+      confidence: typeof item.confidence === 'number' ? item.confidence : 0.5,
+      approved: false,
+    }))
+  } catch (error: any) {
+    console.error('[analyze-script] Proper noun extraction error:', error)
+    return []
+  }
+}
+
 export async function POST(request: NextRequest) {
   try {
-    const { text, apiKey } = await request.json()
+    const { text, apiKey, geminiModelScript, geminiModelLight } = await request.json()
     
     console.log('[analyze-script] Request received, text length:', text?.length || 0)
 
@@ -67,9 +167,16 @@ export async function POST(request: NextRequest) {
       }, { status: 400 })
     }
 
+    // モデル選択（デフォルトは高機能モデル）
+    // gemini-2.5-proが存在しない場合はgemini-1.5-proにフォールバック
+    const scriptModel = geminiModelScript || 'gemini-1.5-pro'
+    const lightModel = geminiModelLight || 'gemini-2.0-flash-exp'
+    
+    console.log('[analyze-script] Using models:', { scriptModel, lightModel })
+
     console.log('[analyze-script] Initializing Gemini API...')
     const genAI = new GoogleGenerativeAI(geminiApiKey)
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash-lite' })
+    const model = genAI.getGenerativeModel({ model: scriptModel })
 
     // 言語を推定
     const detectedLanguage = detectLanguage(text)
@@ -164,15 +271,23 @@ ${truncatedText}
         : []
     }
 
+    // 固有名詞を同時抽出
+    console.log('[analyze-script] Extracting proper nouns...')
+    const properNounsLanguage = detectedLanguage === 'other' ? 'en' : detectedLanguage
+    const properNouns = await extractProperNouns(text, properNounsLanguage, geminiApiKey, lightModel)
+    console.log('[analyze-script] Extracted', properNouns.length, 'proper nouns')
+
     console.log('[analyze-script] Returning formatted analysis:', {
       title: formattedAnalysis.title,
       genres: formattedAnalysis.genres,
-      charactersCount: formattedAnalysis.characters.length
+      charactersCount: formattedAnalysis.characters.length,
+      properNounsCount: properNouns.length
     })
     
     return NextResponse.json<ScriptAnalysisResult>({
       success: true,
-      analysis: formattedAnalysis
+      analysis: formattedAnalysis,
+      properNouns: properNouns
     })
 
   } catch (error: any) {

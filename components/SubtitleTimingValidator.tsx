@@ -255,6 +255,7 @@ export default function SubtitleTimingValidator({
           {Object.entries(groupedViolations).map(([type, violations]) => {
             const violationType = type as TimingViolationType
             const { label, description } = VIOLATION_LABELS[violationType]
+            const violationList = violations as TimingViolation[]
             
             return (
               <div key={type} style={{ marginBottom: '1rem' }}>
@@ -267,13 +268,13 @@ export default function SubtitleTimingValidator({
                   alignItems: 'center',
                   gap: '0.5rem'
                 }}>
-                  {SEVERITY_STYLES[violations[0].severity].icon} {label}
+                  {SEVERITY_STYLES[violationList[0]?.severity || 'warning'].icon} {label}
                   <span style={{ 
                     fontSize: '0.7rem', 
                     fontWeight: 400,
                     color: 'var(--text-muted)' 
                   }}>
-                    ({violations.length}件)
+                    ({violationList.length}件)
                   </span>
                 </h4>
                 <p style={{ 
@@ -285,7 +286,7 @@ export default function SubtitleTimingValidator({
                 </p>
                 
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
-                  {violations.slice(0, 10).map((violation, idx) => {
+                  {violationList.slice(0, 10).map((violation, idx) => {
                     const style = SEVERITY_STYLES[violation.severity]
                     
                     return (
@@ -304,14 +305,27 @@ export default function SubtitleTimingValidator({
                       >
                         <div>
                           <span style={{ fontWeight: 500 }}>字幕 #{violation.subtitleIndex}</span>
-                          <span style={{ color: 'var(--text-muted)', marginLeft: '0.5rem' }}>
-                            {violation.details.actual.toFixed(2)}{violation.details.unit === 'seconds' ? '秒' : 
-                              violation.details.unit === 'frames' ? 'f' : 
-                              violation.details.unit === 'cps' ? ' CPS' : '文字'} 
-                            {' '}(基準: {violation.details.expected}{violation.details.unit === 'seconds' ? '秒' : 
-                              violation.details.unit === 'frames' ? 'f' : 
-                              violation.details.unit === 'cps' ? ' CPS' : '文字'})
-                          </span>
+                          {violation.details && (
+                            <span style={{ color: 'var(--text-muted)', marginLeft: '0.5rem' }}>
+                              {typeof violation.details.actual === 'number' 
+                                ? violation.details.actual.toFixed(2)
+                                : violation.details.actual}
+                              {violation.details.unit === 'seconds' ? '秒' : 
+                                violation.details.unit === 'frames' ? 'f' : 
+                                violation.details.unit === 'cps' ? ' CPS' : '文字'} 
+                              {' '}(基準: {typeof violation.details.expected === 'number'
+                                ? violation.details.expected
+                                : violation.details.expected}
+                              {violation.details.unit === 'seconds' ? '秒' : 
+                                violation.details.unit === 'frames' ? 'f' : 
+                                violation.details.unit === 'cps' ? ' CPS' : '文字'})
+                            </span>
+                          )}
+                          {!violation.details && (
+                            <span style={{ color: 'var(--text-muted)', marginLeft: '0.5rem' }}>
+                              {violation.message}
+                            </span>
+                          )}
                         </div>
                         
                         <div style={{ display: 'flex', gap: '0.5rem' }}>
@@ -347,14 +361,14 @@ export default function SubtitleTimingValidator({
                     )
                   })}
                   
-                  {violations.length > 10 && (
+                  {violationList.length > 10 && (
                     <p style={{ 
                       fontSize: '0.75rem', 
                       color: 'var(--text-muted)',
                       padding: '0.5rem',
                       textAlign: 'center'
                     }}>
-                      他 {violations.length - 10}件...
+                      他 {violationList.length - 10}件...
                     </p>
                   )}
                 </div>

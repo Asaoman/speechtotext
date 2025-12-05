@@ -40,7 +40,7 @@ export default function ProjectSelectorCard({
     ? aiPreferences.openaiModel
     : service === 'claude'
     ? aiPreferences.claudeModel
-    : aiPreferences.geminiModel
+    : (aiPreferences.geminiModelTranslate || aiPreferences.geminiModel)
 
   return (
     <div className="card" style={{ padding: '1rem', marginBottom: '1rem' }}>

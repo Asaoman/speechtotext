@@ -32,7 +32,7 @@ export default function ProofreadingSection({
     ? aiPreferences.openaiModel
     : service === 'claude'
     ? aiPreferences.claudeModel
-    : aiPreferences.geminiModel
+    : (aiPreferences.geminiModelTranslate || aiPreferences.geminiModel)
   const includeProperNouns = true  // 常に固有名詞を参照
 
   const [language, setLanguage] = useState<'ja' | 'en'>('ja')

@@ -5,12 +5,14 @@ import {
   ExtractedProperNoun, 
   ProperNounCategory,
   ProperNounExtractionResult,
-  ApiKeys 
+  ApiKeys,
+  AIPreferences
 } from '@/lib/types'
 
 interface ProperNounExtractorProps {
   projectId: string
   apiKeys: ApiKeys
+  aiPreferences?: AIPreferences
   existingNouns: ExtractedProperNoun[]
   scriptText?: string  // 脚本テキスト（MovieSubtitleTabから渡される）
   subtitleText?: string  // 字幕テキスト（MovieSubtitleTabから渡される）
@@ -32,6 +34,7 @@ const CATEGORY_CONFIG: Record<ProperNounCategory, { label: string; color: string
 export default function ProperNounExtractor({
   projectId,
   apiKeys,
+  aiPreferences,
   existingNouns,
   scriptText,
   subtitleText,
@@ -129,6 +132,7 @@ export default function ProperNounExtractor({
           language,
           existingNouns,
           apiKey: apiKeys.gemini,
+          geminiModelLight: aiPreferences?.geminiModelLight,
         }),
       })
 

@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
-// @ts-ignore - pdf-parse has no type definitions
-import pdf from 'pdf-parse'
+
+// Dynamic import to avoid build-time errors with pdf-parse
+async function parsePDF(buffer: Buffer) {
+  // @ts-ignore - pdf-parse has no type definitions
+  const pdfParse = (await import('pdf-parse')).default || require('pdf-parse')
+  return pdfParse(buffer)
+}
 
 export async function POST(request: NextRequest) {
   try {
@@ -19,7 +24,7 @@ export async function POST(request: NextRequest) {
     const buffer = Buffer.from(arrayBuffer)
 
     // PDFをパース
-    const data = await pdf(buffer)
+    const data = await parsePDF(buffer)
 
     return NextResponse.json({
       success: true,

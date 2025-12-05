@@ -26,7 +26,6 @@ import CharacterManager from './CharacterManager'
 import MovieSettings from './MovieSettings'
 import TranslationEditor from './TranslationEditor'
 import SpeakerMapping from './SpeakerMapping'
-import SubtitleTimingValidator from './SubtitleTimingValidator'
 import ProperNounExtractor from './ProperNounExtractor'
 import { useProject } from '@/hooks/useProject'
 
@@ -135,8 +134,12 @@ export default function MovieSubtitleTab({ apiKeys, aiPreferences, loadProjectId
   const [characters, setCharacters] = useState<Character[]>([])
   const [movieSettings, setMovieSettings] = useState<MovieSettingsType | null>(null)
   const [error, setError] = useState('')
-  const [activeSection, setActiveSection] = useState<'settings' | 'format' | 'characters' | 'dialogues' | 'proper-nouns' | 'speaker-mapping' | 'editor' | 'validation'>('settings')
+  const [activeSection, setActiveSection] = useState<'settings' | 'format' | 'workspace'>('settings')
+  const [selectedSubtitleIndex, setSelectedSubtitleIndex] = useState<number | null>(null)
   const [includeSpeakerTags, setIncludeSpeakerTags] = useState(false)
+  const [lastSavedTime, setLastSavedTime] = useState<Date | null>(null)
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle')
+  const [currentMovieProjectId, setCurrentMovieProjectId] = useState<string | null>(null)
   
   // プリセット・パターン設定
   const [selectedPreset, setSelectedPreset] = useState<SubtitlePlatform>('netflix_ja')
@@ -182,9 +185,240 @@ export default function MovieSubtitleTab({ apiKeys, aiPreferences, loadProjectId
   const STORAGE_KEY_PREFIX = 'movie_subtitle_'
   const getStorageKey = (key: string) => `${STORAGE_KEY_PREFIX}${selectedProjectId || 'default'}_${key}`
 
-  // localStorageからのデータ復元
+  // MovieProjectを作成または取得
+  const ensureMovieProject = useCallback(async (): Promise<string | null> => {
+    if (!selectedProjectId) return null
+
+    try {
+      // 既存のMovieProjectを検索
+      const existingRes = await fetch(`/api/movie-projects?projectId=${selectedProjectId}&limit=1`)
+      if (existingRes.ok) {
+        const existingData = await existingRes.json()
+        if (existingData.movieProjects && existingData.movieProjects.length > 0) {
+          return existingData.movieProjects[0].id
+        }
+      }
+
+      // 新規作成
+      const title = movieSettings?.title || projects.find(p => p.id === selectedProjectId)?.name || '無題の映画字幕プロジェクト'
+      const createRes = await fetch('/api/movie-projects', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          projectId: selectedProjectId,
+          title,
+          originalLanguage: movieSettings?.originalLanguage || 'en',
+          targetLanguage: movieSettings?.targetLanguage || 'ja',
+          genres: movieSettings?.genres ? JSON.stringify(movieSettings.genres) : null,
+          eraSetting: movieSettings?.eraSetting || null,
+          targetAudience: movieSettings?.targetAudience || null,
+          translationStyle: movieSettings?.translationStyle || null,
+          toneDescription: movieSettings?.toneDescription || null,
+          specialInstructions: movieSettings?.specialInstructions || null,
+          glossary: movieSettings?.glossary ? JSON.stringify(movieSettings.glossary) : null,
+          preset: selectedPreset || null,
+          settings: movieSettings ? JSON.stringify(movieSettings) : null,
+        })
+      })
+
+      if (createRes.ok) {
+        const newProject = await createRes.json()
+        return newProject.id
+      }
+    } catch (err) {
+      console.error('Failed to ensure movie project:', err)
+    }
+    return null
+  }, [selectedProjectId, movieSettings, projects, selectedPreset])
+
+  // データベースへの自動保存（debounce付き）
+  const saveToDatabase = useCallback(async () => {
+    if (!selectedProjectId) return
+
+    const movieProjectId = await ensureMovieProject()
+    if (!movieProjectId) return
+
+    setSaveStatus('saving')
+
+    try {
+      // MovieProjectを更新
+      if (movieSettings) {
+        await fetch('/api/movie-projects', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            id: movieProjectId,
+            title: movieSettings.title || projects.find(p => p.id === selectedProjectId)?.name || '無題',
+            originalLanguage: movieSettings.originalLanguage || 'en',
+            targetLanguage: movieSettings.targetLanguage || 'ja',
+            genres: movieSettings.genres ? JSON.stringify(movieSettings.genres) : null,
+            eraSetting: movieSettings.eraSetting || null,
+            targetAudience: movieSettings.targetAudience || null,
+            translationStyle: movieSettings.translationStyle || null,
+            toneDescription: movieSettings.toneDescription || null,
+            specialInstructions: movieSettings.specialInstructions || null,
+            glossary: movieSettings.glossary ? JSON.stringify(movieSettings.glossary) : null,
+            preset: selectedPreset || null,
+            settings: JSON.stringify(movieSettings),
+          })
+        })
+      }
+
+      // 字幕を保存（全置換）
+      if (subtitles.length > 0) {
+        await fetch('/api/movie-projects/subtitles', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            movieProjectId,
+            replaceAll: true,
+            subtitles: subtitles.map(sub => ({
+              index: sub.index,
+              startTime: sub.startTime,
+              endTime: sub.endTime,
+              originalText: sub.originalText || sub.text,
+              translatedText: sub.translatedText,
+              characterId: sub.characterId || null,
+              speakerId: sub.speakerId || sub.characterName || null,
+              isTranslated: sub.isTranslated || false,
+              needsReview: sub.needsReview || false,
+              notes: sub.notes || null,
+            }))
+          })
+        })
+      }
+
+      // キャラクターを保存
+      if (characters.length > 0) {
+        // 既存のキャラクターを取得
+        const charsRes = await fetch(`/api/movie-projects/characters?movieProjectId=${movieProjectId}`)
+        const existingChars = charsRes.ok ? await charsRes.json() : []
+        const existingCharIds = new Set(existingChars.map((c: any) => c.id))
+
+        // 新規作成または更新
+        for (const char of characters) {
+          const charData = {
+            movieProjectId,
+            name: char.name,
+            nameReading: char.nameReading || null,
+            gender: char.gender || 'unknown',
+            ageGroup: char.ageGroup || 'adult',
+            speechStyle: char.speechStyle || 'casual',
+            firstPerson: char.firstPerson || '私',
+            secondPerson: char.secondPerson || 'あなた',
+            sentenceEndings: char.sentenceEndings ? JSON.stringify(char.sentenceEndings) : null,
+            characterTraits: char.characterTraits || char.description || null,
+            sampleDialogues: char.sampleDialogues ? JSON.stringify(char.sampleDialogues) : null,
+            speakerId: char.speakerId || null,
+            color: char.color || null,
+          }
+
+          if (existingCharIds.has(char.id)) {
+            await fetch('/api/movie-projects/characters', {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ id: char.id, ...charData })
+            })
+          } else {
+            await fetch('/api/movie-projects/characters', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(charData)
+            })
+          }
+        }
+      }
+
+      setCurrentMovieProjectId(movieProjectId)
+      setLastSavedTime(new Date())
+      setSaveStatus('saved')
+      setTimeout(() => setSaveStatus('idle'), 2000)
+    } catch (err) {
+      console.error('Failed to save to database:', err)
+      setSaveStatus('idle')
+    }
+  }, [selectedProjectId, subtitles, characters, movieSettings, selectedPreset, projects, ensureMovieProject])
+
+  // データベースからの読み込み
   useEffect(() => {
-    if (typeof window === 'undefined') return
+    if (loadProjectId) {
+      const loadFromDatabase = async () => {
+        try {
+          const res = await fetch(`/api/movie-projects?id=${loadProjectId}&includeAll=true`)
+          if (res.ok) {
+            const movieProject = await res.json()
+            
+            // プロジェクトを選択
+            if (movieProject.projectId) {
+              handleProjectSelect(movieProject.projectId)
+            }
+            
+            // 設定を復元
+            if (movieProject.settings) {
+              try {
+                const settings = JSON.parse(movieProject.settings)
+                setMovieSettings(settings)
+              } catch (e) {
+                // settingsがJSONでない場合
+              }
+            }
+            
+            // 字幕を復元
+            if (movieProject.subtitles && movieProject.subtitles.length > 0) {
+              setSubtitles(movieProject.subtitles.map((sub: any) => ({
+                index: sub.index,
+                startTime: sub.startTime,
+                endTime: sub.endTime,
+                text: sub.originalText || '',
+                originalText: sub.originalText || '',
+                translatedText: sub.translatedText || '',
+                characterId: sub.characterId || null,
+                characterName: sub.character?.name || null,
+                speakerId: sub.speakerId || null,
+                isTranslated: sub.isTranslated || false,
+                needsReview: sub.needsReview || false,
+                notes: sub.notes || null,
+                lines: (sub.translatedText || sub.originalText || '').split('\n'),
+              })))
+            }
+            
+            // キャラクターを復元
+            if (movieProject.characters && movieProject.characters.length > 0) {
+              setCharacters(movieProject.characters.map((char: any) => ({
+                id: char.id,
+                projectId: movieProject.projectId,
+                name: char.name,
+                nameReading: char.nameReading || '',
+                gender: char.gender || 'unknown',
+                ageGroup: char.ageGroup || 'adult',
+                speechStyle: char.speechStyle || 'casual',
+                firstPerson: char.firstPerson || '私',
+                secondPerson: char.secondPerson || 'あなた',
+                sentenceEndings: char.sentenceEndings ? JSON.parse(char.sentenceEndings) : [],
+                characterTraits: char.characterTraits || '',
+                description: char.characterTraits || '',
+                sampleDialogues: char.sampleDialogues ? JSON.parse(char.sampleDialogues) : [],
+                speakerId: char.speakerId || null,
+                color: char.color || null,
+                created_at: char.createdAt,
+                updated_at: char.updatedAt,
+              })))
+            }
+            
+            setCurrentMovieProjectId(movieProject.id)
+            onProjectLoaded?.()
+          }
+        } catch (err) {
+          console.error('Failed to load movie project from database:', err)
+        }
+      }
+      loadFromDatabase()
+    }
+  }, [loadProjectId, handleProjectSelect, onProjectLoaded])
+
+  // localStorageからのデータ復元（データベースにない場合のみ）
+  useEffect(() => {
+    if (typeof window === 'undefined' || loadProjectId) return
     
     try {
       const savedSubtitles = localStorage.getItem(getStorageKey('subtitles'))
@@ -223,7 +457,27 @@ export default function MovieSubtitleTab({ apiKeys, aiPreferences, loadProjectId
     } catch (err) {
       console.error('Failed to restore data from localStorage:', err)
     }
-  }, [selectedProjectId])
+  }, [selectedProjectId, loadProjectId])
+
+  // プロジェクト選択時にMovieProjectを初期化
+  useEffect(() => {
+    if (selectedProjectId) {
+      ensureMovieProject().then(id => {
+        if (id) setCurrentMovieProjectId(id)
+      })
+    }
+  }, [selectedProjectId, ensureMovieProject])
+
+  // データベースへの自動保存（debounce付き）
+  useEffect(() => {
+    if (!selectedProjectId || (!subtitles.length && !characters.length && !movieSettings)) return
+
+    const timeoutId = setTimeout(() => {
+      saveToDatabase()
+    }, 2000) // 2秒後に保存
+
+    return () => clearTimeout(timeoutId)
+  }, [subtitles, characters, movieSettings, selectedProjectId, saveToDatabase])
 
   // localStorageへのデータ自動保存
   useEffect(() => {
@@ -640,7 +894,9 @@ export default function MovieSubtitleTab({ apiKeys, aiPreferences, loadProjectId
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           text,
-          apiKey: apiKeys.gemini
+          apiKey: apiKeys.gemini,
+          geminiModelScript: aiPreferences.geminiModelScript || 'gemini-2.5-pro',
+          geminiModelLight: aiPreferences.geminiModelLight || 'gemini-2.0-flash-exp'
         })
       })
 
@@ -704,11 +960,27 @@ export default function MovieSubtitleTab({ apiKeys, aiPreferences, loadProjectId
           }))
           setCharacters(chars)
         }
+
+        // 固有名詞を設定（脚本分析から自動抽出）
+        if (data.properNouns && Array.isArray(data.properNouns)) {
+          setProperNouns(data.properNouns.map((n: any) => ({
+            id: n.id || `noun_${Date.now()}_${Math.random()}`,
+            term: n.term || '',
+            category: n.category || 'other',
+            reading: n.reading,
+            variants: n.variants || [],
+            context: n.context || '',
+            confidence: n.confidence || 0.5,
+            approved: false
+          })))
+        }
         
         setAnalysisStep('完了')
         setAnalysisProgress(100)
       } else if (data.error) {
         setError(data.error)
+      } else {
+        setError('脚本分析に失敗しました（不明なエラー）')
       }
     } catch (err: any) {
       console.error('Script analysis error:', err)
@@ -769,8 +1041,12 @@ export default function MovieSubtitleTab({ apiKeys, aiPreferences, loadProjectId
           type: 'min_duration',
           severity: 'error',
           message: `表示時間が短すぎます: ${duration.toFixed(2)}s < ${preset.minDuration}s`,
-          currentValue: duration,
-          expectedValue: preset.minDuration
+          details: {
+            actual: duration,
+            expected: preset.minDuration,
+            unit: 'seconds'
+          },
+          autoFixable: true
         })
       }
 
@@ -780,8 +1056,12 @@ export default function MovieSubtitleTab({ apiKeys, aiPreferences, loadProjectId
           type: 'max_duration',
           severity: 'warning',
           message: `表示時間が長すぎます: ${duration.toFixed(2)}s > ${preset.maxDuration}s`,
-          currentValue: duration,
-          expectedValue: preset.maxDuration
+          details: {
+            actual: duration,
+            expected: preset.maxDuration,
+            unit: 'seconds'
+          },
+          autoFixable: false
         })
       }
 
@@ -791,8 +1071,12 @@ export default function MovieSubtitleTab({ apiKeys, aiPreferences, loadProjectId
           type: 'reading_speed',
           severity: 'warning',
           message: `読み取り速度が速すぎます: ${cps.toFixed(1)} CPS > ${preset.maxCPS} CPS`,
-          currentValue: cps,
-          expectedValue: preset.maxCPS
+          details: {
+            actual: cps,
+            expected: preset.maxCPS,
+            unit: 'cps'
+          },
+          autoFixable: false
         })
       }
 
@@ -804,8 +1088,12 @@ export default function MovieSubtitleTab({ apiKeys, aiPreferences, loadProjectId
             type: 'char_limit',
             severity: 'error',
             message: `行${lineIndex + 1}: ${line.length}文字 > ${preset.maxCharsPerLine}文字`,
-            currentValue: line.length,
-            expectedValue: preset.maxCharsPerLine
+            details: {
+              actual: line.length,
+              expected: preset.maxCharsPerLine,
+              unit: 'characters'
+            },
+            autoFixable: false
           })
         }
       })
@@ -1020,13 +1308,29 @@ export default function MovieSubtitleTab({ apiKeys, aiPreferences, loadProjectId
   })
 
   return (
-    <div style={{ maxWidth: '1200px', margin: '0 auto' }}>
+    <div style={{ maxWidth: '1800px', margin: '0 auto' }}>
       {/* ヘッダー */}
       <div className="card" style={{ padding: '1rem', marginBottom: '1rem' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.75rem' }}>
-          <h2 style={{ fontSize: '16px', fontWeight: 700, color: 'var(--text)', margin: 0 }}>
-            映画字幕翻訳
-          </h2>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+            <h2 style={{ fontSize: '16px', fontWeight: 700, color: 'var(--text)', margin: 0 }}>
+              映画字幕翻訳
+            </h2>
+            {/* 保存状態表示 */}
+            {saveStatus === 'saving' && (
+              <span style={{ fontSize: '11px', color: 'var(--accent)' }}>💾 保存中...</span>
+            )}
+            {saveStatus === 'saved' && lastSavedTime && (
+              <span style={{ fontSize: '11px', color: 'rgb(34, 197, 94)' }}>
+                ✓ 保存済み ({lastSavedTime.toLocaleTimeString()})
+              </span>
+            )}
+            {saveStatus === 'idle' && lastSavedTime && (
+              <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+                最終保存: {lastSavedTime.toLocaleTimeString()}
+              </span>
+            )}
+          </div>
 
           {/* テスト用ダミーデータボタン */}
           <button
@@ -1067,20 +1371,52 @@ export default function MovieSubtitleTab({ apiKeys, aiPreferences, loadProjectId
               ))}
             </select>
             <button
-              onClick={() => {
-                const name = prompt('プロジェクト名を入力:')
-                if (name) {
-                  setNewProjectName(name)
-                  // 次のレンダリングで handleCreateProject を呼び出す
-                  setTimeout(() => handleCreateProject(), 0)
-                }
-              }}
+              onClick={() => setShowNewProjectInput(true)}
               className="btn-secondary"
               style={{ padding: '0.375rem 0.5rem', fontSize: '11px' }}
             >
               + 新規
             </button>
           </div>
+          {showNewProjectInput && (
+            <div style={{ marginTop: '0.5rem', display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+              <input
+                type="text"
+                value={newProjectName}
+                onChange={(e) => setNewProjectName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    handleCreateProject()
+                  } else if (e.key === 'Escape') {
+                    setShowNewProjectInput(false)
+                    setNewProjectName('')
+                  }
+                }}
+                className="input"
+                placeholder="プロジェクト名を入力"
+                style={{ fontSize: '12px', flex: 1, padding: '0.375rem 0.5rem' }}
+                autoFocus
+              />
+              <button
+                onClick={handleCreateProject}
+                disabled={!newProjectName.trim()}
+                className="btn-primary"
+                style={{ padding: '0.375rem 0.75rem', fontSize: '12px' }}
+              >
+                作成
+              </button>
+              <button
+                onClick={() => {
+                  setShowNewProjectInput(false)
+                  setNewProjectName('')
+                }}
+                className="btn"
+                style={{ padding: '0.375rem 0.75rem', fontSize: '12px' }}
+              >
+                ✕
+              </button>
+            </div>
+          )}
 
           {/* インポート */}
           <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
@@ -1270,14 +1606,11 @@ export default function MovieSubtitleTab({ apiKeys, aiPreferences, loadProjectId
       {/* タブ */}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.25rem', borderBottomWidth: '1px', borderBottomStyle: 'solid', borderBottomColor: 'var(--border)', marginBottom: '1rem' }}>
         <button onClick={() => setActiveSection('settings')} style={tabStyle(activeSection === 'settings')}>作品設定</button>
-        <button onClick={() => setActiveSection('format')} style={tabStyle(activeSection === 'format')}>フォーマット</button>
-        <button onClick={() => setActiveSection('characters')} style={tabStyle(activeSection === 'characters')}>キャラクター ({characters.length})</button>
-        <button onClick={() => setActiveSection('dialogues')} style={tabStyle(activeSection === 'dialogues')}>セリフ ({subtitles.length})</button>
-        <button onClick={() => setActiveSection('proper-nouns')} style={tabStyle(activeSection === 'proper-nouns')}>固有名詞 ({properNouns.length})</button>
-        <button onClick={() => setActiveSection('speaker-mapping')} style={tabStyle(activeSection === 'speaker-mapping')}>話者マッピング</button>
-        <button onClick={() => setActiveSection('editor')} style={tabStyle(activeSection === 'editor')}>翻訳エディタ</button>
-        <button onClick={() => setActiveSection('validation')} style={tabStyle(activeSection === 'validation')}>
-          タイミング検証 {timingValidation && !timingValidation.isValid && <span style={{ color: '#ef4444' }}>({timingValidation.totalViolations})</span>}
+        <button onClick={() => setActiveSection('format')} style={tabStyle(activeSection === 'format')}>
+          フォーマット {timingValidation && !timingValidation.isValid && <span style={{ color: '#ef4444' }}>({timingValidation.totalViolations})</span>}
+        </button>
+        <button onClick={() => setActiveSection('workspace')} style={tabStyle(activeSection === 'workspace')}>
+          翻訳ワークスペース
         </button>
       </div>
 
@@ -1374,7 +1707,7 @@ export default function MovieSubtitleTab({ apiKeys, aiPreferences, loadProjectId
               </div>
 
               {/* セグメント分割パターン */}
-              <div>
+              <div style={{ marginBottom: '1rem' }}>
                 <label style={{ display: 'block', fontSize: '11px', color: 'var(--text-muted)', marginBottom: '0.375rem' }}>セグメント分割</label>
                 <select
                   value={selectedSegmentPattern}
@@ -1386,102 +1719,153 @@ export default function MovieSubtitleTab({ apiKeys, aiPreferences, loadProjectId
                   ))}
                 </select>
               </div>
-            </div>
-          )}
 
-          {/* キャラクター管理 */}
-          {activeSection === 'characters' && (
-            <CharacterManager
-              projectId={selectedProjectId}
-              onCharacterSelect={(char) => {}}
-            />
-          )}
-
-          {/* セリフ一覧 */}
-          {activeSection === 'dialogues' && (
-            <div className="card" style={{ padding: '1rem' }}>
-              <h3 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '1rem' }}>セリフ一覧 ({subtitles.length})</h3>
-              
-              {subtitles.length === 0 ? (
-                <p style={{ fontSize: '12px', color: 'var(--text-muted)', textAlign: 'center', padding: '2rem' }}>
-                  SRTまたは音声をインポートしてください
-                </p>
-              ) : (
-                <div style={{ maxHeight: '500px', overflow: 'auto' }}>
-                  {subtitles.map((sub) => (
-                    <div key={sub.index} style={{ padding: '0.75rem', marginBottom: '0.5rem', backgroundColor: 'var(--bg)', border: '1px solid var(--border)', borderRadius: '6px' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.375rem' }}>
-                        <span style={{ fontSize: '10px', color: 'var(--text-muted)', fontFamily: 'monospace' }}>#{sub.index}</span>
-                        <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>{formatTimestampSRT(sub.startTime)}</span>
-                        {sub.characterName && (
-                          <span style={{ padding: '0.125rem 0.375rem', fontSize: '10px', backgroundColor: 'var(--accent)', color: 'white', borderRadius: '10px' }}>
-                            {sub.characterName}
-                          </span>
-                        )}
-                        {sub.isTranslated && <span style={{ fontSize: '9px', color: '#10b981', marginLeft: 'auto' }}>翻訳済</span>}
-                      </div>
-                      <div style={{ fontSize: '12px', color: 'var(--text)', marginBottom: '0.25rem' }}>{sub.originalText || sub.text}</div>
-                      {sub.translatedText && (
-                        <div style={{ fontSize: '12px', color: 'var(--accent)', paddingTop: '0.25rem', borderTopWidth: '1px', borderTopStyle: 'dashed', borderTopColor: 'var(--border)' }}>
-                          {sub.translatedText}
-                        </div>
-                      )}
-                    </div>
-                  ))}
+              {/* タイミング警告（簡易版） */}
+              {timingValidation && timingValidation.totalViolations > 0 && (
+                <div style={{ padding: '0.75rem', backgroundColor: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.3)', borderRadius: '6px', marginTop: '1rem' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
+                    <span style={{ fontSize: '14px' }}>⚠️</span>
+                    <span style={{ fontSize: '12px', fontWeight: 600, color: '#ef4444' }}>
+                      タイミング警告: {timingValidation.totalViolations}件
+                    </span>
+                  </div>
+                  <div style={{ fontSize: '10px', color: 'var(--text-muted)' }}>
+                    {timingValidation.errors > 0 && <span style={{ color: '#ef4444' }}>エラー: {timingValidation.errors}件</span>}
+                    {timingValidation.errors > 0 && timingValidation.warnings > 0 && <span> • </span>}
+                    {timingValidation.warnings > 0 && <span style={{ color: '#f59e0b' }}>警告: {timingValidation.warnings}件</span>}
+                  </div>
+                  <p style={{ fontSize: '10px', color: 'var(--text-muted)', marginTop: '0.5rem' }}>
+                    表示時間: {timingValidation.statistics.avgDuration.toFixed(2)}秒 • CPS: {timingValidation.statistics.avgCPS.toFixed(1)}
+                  </p>
                 </div>
               )}
             </div>
           )}
 
-          {/* 固有名詞 */}
-          {activeSection === 'proper-nouns' && (
-            <ProperNounExtractor
-              projectId={selectedProjectId}
-              apiKeys={apiKeys}
-              existingNouns={properNouns}
-              scriptText={scriptText}
-              subtitleText={subtitles.map(s => s.text).join('\n')}
-              onNounsExtracted={(nouns) => setProperNouns(nouns.map((n, i) => ({ ...n, id: `noun_${i}` })))}
-              onNounApproved={(noun) => {
-                setProperNouns(prev => prev.map(n => n.id === noun.id ? { ...n, approved: true } : n))
-              }}
-              onNounRemoved={(id) => {
-                setProperNouns(prev => prev.filter(n => n.id !== id))
-              }}
-            />
+          {/* 翻訳ワークスペース（分割ビュー） */}
+          {activeSection === 'workspace' && (
+            <div style={{ display: 'flex', gap: '1rem', height: 'calc(100vh - 300px)', minHeight: '600px' }}>
+              {/* 左パネル */}
+              <div style={{ width: '40%', display: 'flex', flexDirection: 'column', gap: '1rem', overflow: 'hidden' }}>
+                {/* キャラクター一覧 */}
+                <div className="card" style={{ padding: '0.75rem', flexShrink: 0 }}>
+                  <h3 style={{ fontSize: '12px', fontWeight: 600, marginBottom: '0.5rem' }}>キャラクター ({characters.length})</h3>
+                  <div style={{ maxHeight: '150px', overflowY: 'auto' }}>
+                    {characters.length === 0 ? (
+                      <p style={{ fontSize: '10px', color: 'var(--text-muted)', textAlign: 'center', padding: '1rem' }}>キャラクターがありません</p>
+                    ) : (
+                      characters.map(char => (
+                        <div key={char.id} style={{ padding: '0.5rem', marginBottom: '0.25rem', backgroundColor: 'var(--bg-subtle)', borderRadius: '4px', fontSize: '11px' }}>
+                          <div style={{ fontWeight: 500 }}>{char.name}</div>
+                          <div style={{ fontSize: '9px', color: 'var(--text-muted)' }}>{char.speechStyle}</div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+
+                {/* セリフ一覧 */}
+                <div className="card" style={{ padding: '0.75rem', flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+                  <h3 style={{ fontSize: '12px', fontWeight: 600, marginBottom: '0.5rem' }}>セリフ ({subtitles.length})</h3>
+                  <div style={{ flex: 1, overflowY: 'auto' }}>
+                    {subtitles.length === 0 ? (
+                      <p style={{ fontSize: '10px', color: 'var(--text-muted)', textAlign: 'center', padding: '1rem' }}>
+                        SRTまたは音声をインポートしてください
+                      </p>
+                    ) : (
+                      subtitles.map((sub) => {
+                        const duration = sub.endTime - sub.startTime
+                        const text = sub.translatedText || sub.text
+                        const cps = text.length / duration
+                        const hasWarning = duration < currentPreset.minDuration || duration > currentPreset.maxDuration || cps > currentPreset.maxCPS
+                        
+                        return (
+                          <div
+                            key={sub.index}
+                            onClick={() => setSelectedSubtitleIndex(sub.index)}
+                            style={{
+                              padding: '0.5rem',
+                              marginBottom: '0.25rem',
+                              backgroundColor: selectedSubtitleIndex === sub.index ? 'var(--accent)' : 'var(--bg-subtle)',
+                              color: selectedSubtitleIndex === sub.index ? 'white' : 'var(--text)',
+                              borderRadius: '4px',
+                              fontSize: '10px',
+                              cursor: 'pointer',
+                              border: selectedSubtitleIndex === sub.index ? '2px solid var(--accent)' : '1px solid var(--border)'
+                            }}
+                          >
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', marginBottom: '0.25rem' }}>
+                              <span style={{ fontFamily: 'monospace' }}>#{sub.index}</span>
+                              <span>{formatTimestampSRT(sub.startTime)}</span>
+                              {hasWarning && <span style={{ fontSize: '9px' }}>⚠️</span>}
+                              {sub.characterName && (
+                                <span style={{ padding: '0.125rem 0.25rem', fontSize: '9px', backgroundColor: selectedSubtitleIndex === sub.index ? 'rgba(255,255,255,0.3)' : 'var(--accent)', color: selectedSubtitleIndex === sub.index ? 'white' : 'white', borderRadius: '3px' }}>
+                                  {sub.characterName}
+                                </span>
+                              )}
+                            </div>
+                            <div style={{ fontSize: '11px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              {text}
+                            </div>
+                          </div>
+                        )
+                      })
+                    )}
+                  </div>
+                </div>
+
+                {/* 話者マッピング */}
+                <div className="card" style={{ padding: '0.75rem', flexShrink: 0 }}>
+                  <h3 style={{ fontSize: '12px', fontWeight: 600, marginBottom: '0.5rem' }}>話者マッピング</h3>
+                  <SpeakerMapping
+                    subtitles={subtitles}
+                    characters={characters}
+                    onMappingComplete={(updatedSubtitles) => setSubtitles(updatedSubtitles)}
+                  />
+                </div>
+              </div>
+
+              {/* 右パネル */}
+              <div style={{ width: '60%', display: 'flex', flexDirection: 'column', gap: '1rem', overflow: 'hidden' }}>
+                {/* 翻訳エディタ */}
+                <div className="card" style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+                  <TranslationEditor
+                    subtitles={subtitles}
+                    characters={characters}
+                    movieSettings={movieSettings}
+                    apiKeys={apiKeys}
+                    aiPreferences={aiPreferences}
+                    onSubtitlesChange={setSubtitles}
+                  />
+                </div>
+
+                {/* 固有名詞参照 */}
+                <div className="card" style={{ padding: '0.75rem', flexShrink: 0, maxHeight: '150px', overflowY: 'auto' }}>
+                  <h3 style={{ fontSize: '12px', fontWeight: 600, marginBottom: '0.5rem' }}>固有名詞 ({properNouns.filter(n => n.approved).length}/{properNouns.length})</h3>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.25rem' }}>
+                    {properNouns.filter(n => n.approved).map(noun => (
+                      <span key={noun.id} style={{ padding: '0.25rem 0.5rem', fontSize: '10px', backgroundColor: 'var(--bg-subtle)', borderRadius: '4px' }}>
+                        {noun.term}{noun.reading && ` (${noun.reading})`}
+                      </span>
+                    ))}
+                  </div>
+                  {properNouns.filter(n => !n.approved).length > 0 && (
+                    <div style={{ marginTop: '0.5rem', paddingTop: '0.5rem', borderTop: '1px solid var(--border)' }}>
+                      <p style={{ fontSize: '9px', color: 'var(--text-muted)', marginBottom: '0.25rem' }}>未承認 ({properNouns.filter(n => !n.approved).length})</p>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.25rem' }}>
+                        {properNouns.filter(n => !n.approved).slice(0, 5).map(noun => (
+                          <span key={noun.id} style={{ padding: '0.125rem 0.375rem', fontSize: '9px', backgroundColor: 'rgba(139, 92, 246, 0.1)', borderRadius: '3px', color: 'var(--text-muted)' }}>
+                            {noun.term}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
           )}
 
-          {/* 話者マッピング */}
-          {activeSection === 'speaker-mapping' && (
-            <SpeakerMapping
-              subtitles={subtitles}
-              characters={characters}
-              onMappingComplete={(updatedSubtitles) => setSubtitles(updatedSubtitles)}
-            />
-          )}
-
-          {/* 翻訳エディタ */}
-          {activeSection === 'editor' && (
-            <TranslationEditor
-              subtitles={subtitles}
-              characters={characters}
-              movieSettings={movieSettings}
-              apiKeys={apiKeys}
-              aiPreferences={aiPreferences}
-              onSubtitlesChange={setSubtitles}
-            />
-          )}
-
-          {/* タイミング検証 */}
-          {activeSection === 'validation' && (
-            <SubtitleTimingValidator
-              validation={timingValidation}
-              language={movieSettings?.targetLanguage === 'en' ? 'en' : 'ja'}
-              onJumpToSubtitle={(index) => {
-                setActiveSection('editor')
-              }}
-            />
-          )}
         </>
       )}
     </div>

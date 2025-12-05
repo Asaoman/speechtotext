@@ -1,17 +1,38 @@
-import { PrismaClient } from '@prisma/client'
+// Lazy initialization to avoid Prisma 7 build-time errors
+let _prisma: any = null
 
-const globalForPrisma = globalThis as unknown as {
-  prisma: PrismaClient | undefined
-}
+const getPrisma = () => {
+  if (_prisma) return _prisma
+  
+  // Only initialize in server-side context
+  if (typeof window !== 'undefined') {
+    return null
+  }
 
-// Standard Prisma Client initialization
-// DATABASE_URL should be set in .env.local or environment
-export const prisma =
-  globalForPrisma.prisma ??
-  new PrismaClient({
+  const { PrismaClient } = require('@prisma/client')
+  const globalForPrisma = globalThis as unknown as {
+    prisma: any | undefined
+  }
+
+  _prisma = globalForPrisma.prisma ?? new PrismaClient({
     log: process.env.NODE_ENV === 'development' ? ['error', 'warn'] : ['error'],
   })
 
-if (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = prisma
+  if (process.env.NODE_ENV !== 'production') {
+    globalForPrisma.prisma = _prisma
+  }
+
+  return _prisma
+}
+
+export const prisma = new Proxy({} as any, {
+  get(_target, prop) {
+    const instance = getPrisma()
+    if (!instance) {
+      throw new Error('PrismaClient is not available in this context')
+    }
+    return instance[prop]
+  }
+})
 
 export default prisma

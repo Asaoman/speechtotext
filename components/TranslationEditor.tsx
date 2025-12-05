@@ -48,7 +48,7 @@ export default function TranslationEditor({
     } else if (aiPreferences.defaultService === 'claude') {
       model = aiPreferences.claudeModel
     } else {
-      model = aiPreferences.geminiModel
+      model = aiPreferences.geminiModelTranslate || aiPreferences.geminiModel
     }
     
     // Geminiモデル名のマッピング（古いモデル名を新しいモデル名に変換）
@@ -166,7 +166,7 @@ export default function TranslationEditor({
       if (data.success || data.translatedCount > 0) {
         // 翻訳結果をマージ
         const updated = [...subtitles]
-        const translatedMap = new Map(
+        const translatedMap = new Map<number, MovieSubtitleEntry>(
           data.subtitles.map((s: MovieSubtitleEntry) => [s.index, s])
         )
         
@@ -176,7 +176,7 @@ export default function TranslationEditor({
             updated[idx] = {
               ...updated[idx],
               ...translated,
-              lines: translated.text.split('\n')
+              lines: (translated.translatedText || translated.text || '').split('\n')
             }
           }
         })

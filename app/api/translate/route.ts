@@ -371,7 +371,7 @@ async function translateWithGemini(
 
 export async function POST(request: NextRequest) {
   try {
-    const body: TranslationRequest = await request.json()
+    const body: TranslationRequest & { geminiModelTranslate?: string } = await request.json()
     const {
       text,
       sourceLanguage,
@@ -381,7 +381,8 @@ export async function POST(request: NextRequest) {
       context,
       service,
       model,
-      apiKey
+      apiKey,
+      geminiModelTranslate
     } = body
 
     if (!text) {
@@ -416,7 +417,7 @@ export async function POST(request: NextRequest) {
     const defaultModel = (
       service === 'openai' ? 'gpt-4o' :
       service === 'claude' ? 'claude-sonnet-4-20250514' :
-      'gemini-2.5-flash-lite'
+      (geminiModelTranslate || 'gemini-2.5-flash-lite')
     )
     
     const rawModel = model || defaultModel
