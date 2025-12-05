@@ -15,8 +15,8 @@
     "db:setup": "prisma generate && prisma db push",
     "db:reset": "prisma db push --force-reset",
     "db:seed": "prisma db seed",
-    "db:use-sqlite": "copy prisma\\schema.prisma prisma\\schema.backup.prisma && echo SQLite schema active",
-    "db:use-postgres": "copy prisma\\schema.postgresql.prisma prisma\\schema.prisma && echo PostgreSQL schema active"
+    "db:use-sqlite": "node scripts/switch-db.js sqlite",
+    "db:use-postgres": "node scripts/switch-db.js postgres"
   },
   "keywords": [],
   "author": "",

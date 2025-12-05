@@ -146,7 +146,43 @@ npm run db:setup
 npm run dev
 \`\`\`
 
-ブラウザで http://localhost:3000 を開きます。
+ブラウザで http://localhost:3020 を開きます。
+
+---
+
+## 🍎 Macでの開発
+
+このプロジェクトは**Mac、Windows、Linux**で動作します。
+
+### Macでのセットアップ
+
+1. **Node.jsのインストール**
+   - Node.js 20以上が必要です
+   - [nodejs.org](https://nodejs.org/)からインストール、またはHomebrewで：
+     \`\`\`bash
+     brew install node
+     \`\`\`
+
+2. **Python環境（WhisperX使用時のみ）**
+   - WhisperXのローカル処理を使用する場合、Python 3.8以上が必要です
+   - Homebrewでインストール：
+     \`\`\`bash
+     brew install python
+     \`\`\`
+   - WhisperXを使用しない場合は、OpenAI Whisper APIまたはElevenLabs Scribe APIを使用できます
+
+3. **データベース切り替えコマンド**
+   - Windows/Mac/Linuxで同じコマンドが使用できます：
+     \`\`\`bash
+     npm run db:use-sqlite    # SQLiteに切り替え
+     npm run db:use-postgres  # PostgreSQLに切り替え
+     \`\`\`
+
+### 注意事項
+
+- **WhisperX**: Macでも動作しますが、Python環境と必要なライブラリ（whisperx、torch等）のインストールが必要です
+- **ファイルパス**: すべてのファイルパスはクロスプラットフォーム対応です
+- **データベース**: SQLiteはMacでも問題なく動作します
 
 ---
 
