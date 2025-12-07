@@ -14,13 +14,15 @@ const OPENAI_MODELS = [
 ]
 
 const CLAUDE_MODELS = [
-  { value: 'claude-3-5-sonnet-20241022', label: 'Claude 3.5 Sonnet', price: '$3.00/$15.00 per 1M tokens', recommended: true, description: 'バランス型・推奨' },
-  { value: 'claude-3-7-sonnet-20250219', label: 'Claude 3.7 Sonnet (Sonnet 4.5)', price: '$3.00/$15.00 per 1M tokens', recommended: false, description: '最新・高性能' },
+  { value: 'claude-4.5-sonnet', label: 'Claude 4.5 Sonnet (最新)', price: '$3.00/$15.00 per 1M tokens', recommended: true, description: '最新・高性能' },
+  { value: 'claude-3-7-sonnet-20250219', label: 'Claude 3.7 Sonnet', price: '$3.00/$15.00 per 1M tokens', recommended: false, description: '2025-02リリース' },
+  { value: 'claude-3-5-sonnet-20241022', label: 'Claude 3.5 Sonnet', price: '$3.00/$15.00 per 1M tokens', recommended: false, description: '安定版' },
   { value: 'claude-3-5-sonnet-20240620', label: 'Claude 3.5 Sonnet (旧)', price: '$3.00/$15.00 per 1M tokens', recommended: false, description: '旧バージョン' },
 ]
 
 const GEMINI_MODELS = [
-  { value: 'gemini-2.5-flash-lite', label: 'Gemini 2.5 Flash Lite', price: '$0.10/$0.40 per 1M tokens', recommended: true, description: '最新・最安価・推奨' },
+  { value: 'gemini-3.0-pro', label: 'Gemini 3 Pro (最新)', price: '$?? per 1M tokens', recommended: true, description: '最新・高性能' },
+  { value: 'gemini-2.5-flash-lite', label: 'Gemini 2.5 Flash Lite', price: '$0.10/$0.40 per 1M tokens', recommended: false, description: '低コスト・推奨' },
   { value: 'gemini-2.0-flash-exp', label: 'Gemini 2.0 Flash (実験版)', price: '無料（実験版）', recommended: false, description: '実験版・無料' },
   { value: 'gemini-1.5-flash-latest', label: 'Gemini 1.5 Flash Latest', price: '$0.075/$0.30 per 1M tokens', recommended: false, description: '安定版' },
   { value: 'gemini-1.5-pro', label: 'Gemini 1.5 Pro', price: '$1.25/$5.00 per 1M tokens', recommended: false, description: '高性能・中価格' },

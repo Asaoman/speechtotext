@@ -1,5 +1,21 @@
 # Speech to Text - React/Next.js版
 
+## クイックスタート（ローカル起動）
+
+```
+cd "C:\Users\akihi\OneDrive\ドキュメント\App\Speech to Text\speech-to-text-react"
+npm install          # 初回のみ
+npm run dev
+```
+
+## GitHubへのアップロード（push）
+
+```
+git add .
+git commit -m "your message"
+git push origin main
+```
+
 AI搭載の音声文字起こし・校正アプリケーション。Vercelでホスティング可能なReact（Next.js）ベースの実装です。
 
 ## 機能
@@ -7,13 +23,13 @@ AI搭載の音声文字起こし・校正アプリケーション。Vercelでホ
 ### 🎙️ 文字起こし
 - **WhisperX (ローカル)**: APIキー不要・オフラインで高速動作
 - **OpenAI Whisper API**: クラウドベース・高精度な音声認識
-- **ElevenLabs Scribe**: 話者識別対応の文字起こし
+- **ElevenLabs Scribe**: 話者識別対応の文字起こし（最新Scribeエンジンに自動追従）
 - 対応フォーマット: MP3, WAV, M4A, MP4, FLAC, OGG, WebM
 - 最大ファイルサイズ: **300MB**
 
 ### ✏️ 校正
-- **Claude 3.5 Sonnet**: Anthropic製AI校正
-- **OpenAI GPT-4o**: OpenAI製AI校正
+- **Anthropic Claude**: claude-4.5-sonnet（最新）, claude-3-7-sonnet-20250219, claude-3-5-sonnet-20241022
+- **OpenAI GPT**: gpt-5（最新）, gpt-4o, gpt-4o-mini, o1-preview, o1-mini
 - 誤字脱字・文法エラー・不自然な表現を自動修正
 - 修正箇所と理由を詳細表示
 
@@ -51,11 +67,10 @@ AI搭載の音声文字起こし・校正アプリケーション。Vercelでホ
   - WhisperX (ローカル処理)
   - OpenAI API
   - ElevenLabs API
-- **AI校正**:
-  - Anthropic Claude API
-  - OpenAI GPT-4o API
-- **AI翻訳・分析**:
-  - Google Gemini API (gemini-2.5-flash-lite)
+- **AI校正/翻訳モデル（選択可能）**:
+  - OpenAI: gpt-5（最新）, gpt-4o, gpt-4o-mini, o1-preview, o1-mini
+  - Anthropic: claude-4.5-sonnet（最新）, claude-3-7-sonnet-20250219, claude-3-5-sonnet-20241022
+  - Google Gemini: gemini-3.0-pro（最新）, gemini-2.5-flash-lite, gemini-1.5-pro, gemini-1.5-flash-latest, gemini-2.0-flash-exp
 - **データベース**:
   - Prisma ORM
   - SQLite (ローカル開発)
@@ -299,6 +314,10 @@ speech-to-text-react/
 
 初回起動時に右上の「⚙️ 設定」ボタンから各種APIキーを入力してください。
 APIキーはブラウザのlocalStorageに保存されます。
+
+### 1.5 AIモデルの選択（最新モデル対応）
+- 右上の「⚙️ 設定」→「APIキー/AIモデル」タブでモデルを選択できます
+- 最新モデル例: gpt-5, claude-4.5-sonnet（最新）, gemini-3.0-pro（最新）
 
 ### 2. 音声ファイルのアップロード
 
