@@ -11,10 +11,29 @@ npm run dev
 ## GitHubへのアップロード（push）
 
 ```
+cd "C:\Users\akihi\OneDrive\ドキュメント\App\Speech to Text\speech-to-text-react"
+git status -sb          # 変更確認（README.md, components/SettingsModal.tsx が変更あり）
 git add .
-git commit -m "your message"
+git commit -m "Update models to latest"
 git push origin main
 ```
+
+### どのシェルでも動く汎用的な例
+- **PowerShell / コマンドプロンプト (Windows)**  
+  改行または `;` で順に実行:
+  ```
+  cd "C:\Users\akihi\OneDrive\ドキュメント\App\Speech to Text\speech-to-text-react"
+  git add .
+  git commit -m "your message"
+  git push origin main
+  ```
+- **bash / zsh (macOS / Linux / WSL)**  
+  ```
+  cd /path/to/speech-to-text-react && \
+    git add . && \
+    git commit -m "your message" && \
+    git push origin main
+  ```
 
 AI搭載の音声文字起こし・校正アプリケーション。Vercelでホスティング可能なReact（Next.js）ベースの実装です。
 
