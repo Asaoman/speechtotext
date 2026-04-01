@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import { ApiKeys, SubtitleSettings, AIPreferences } from '@/lib/types'
-import { DEFAULT_SUBTITLE_SETTINGS, DEFAULT_AI_PREFERENCES, storage } from '@/lib/utils'
+import { DEFAULT_SUBTITLE_SETTINGS, DEFAULT_AI_PREFERENCES, storage, generateTimestamp } from '@/lib/utils'
 
 // モデル情報（料金含む）
 const OPENAI_MODELS = [
@@ -21,11 +21,11 @@ const CLAUDE_MODELS = [
 ]
 
 const GEMINI_MODELS = [
-  { value: 'gemini-3.0-pro', label: 'Gemini 3 Pro (最新)', price: '$?? per 1M tokens', recommended: true, description: '最新・高性能' },
-  { value: 'gemini-2.5-flash-lite', label: 'Gemini 2.5 Flash Lite', price: '$0.10/$0.40 per 1M tokens', recommended: false, description: '低コスト・推奨' },
-  { value: 'gemini-2.0-flash-exp', label: 'Gemini 2.0 Flash (実験版)', price: '無料（実験版）', recommended: false, description: '実験版・無料' },
-  { value: 'gemini-1.5-flash-latest', label: 'Gemini 1.5 Flash Latest', price: '$0.075/$0.30 per 1M tokens', recommended: false, description: '安定版' },
-  { value: 'gemini-1.5-pro', label: 'Gemini 1.5 Pro', price: '$1.25/$5.00 per 1M tokens', recommended: false, description: '高性能・中価格' },
+  { value: 'gemini-2.5-flash-lite', label: 'Gemini 2.5 Flash-Lite', price: '低コスト', recommended: false, description: '高速・コスパ最強', tier: 'free' as const },
+  { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash', price: '低コスト', recommended: false, description: '高速・バランス型', tier: 'paid' as const },
+  { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro', price: '$1.25/$10.00 per 1M tokens', recommended: false, description: '高性能・複雑タスク向け', tier: 'paid' as const },
+  { value: 'gemini-3-flash-preview', label: 'Gemini 3 Flash (最新)', price: 'プレビュー', recommended: true, description: '最新・大規模モデル並みの性能', tier: 'paid' as const },
+  { value: 'gemini-3.1-pro-preview', label: 'Gemini 3.1 Pro Preview', price: '有料プラン必須', recommended: false, description: '最新最高性能プレビュー版', tier: 'paid' as const },
 ]
 
 interface SettingsModalProps {
@@ -39,7 +39,12 @@ interface SettingsModalProps {
 }
 
 export default function SettingsModal({ apiKeys, subtitleSettings, aiPreferences, onSaveApiKeys, onSaveSubtitleSettings, onSaveAIPreferences, onClose }: SettingsModalProps) {
-  const [activeTab, setActiveTab] = useState<'api' | 'subtitle' | 'database'>('api')
+  const [activeTab, setActiveTab] = useState<'api' | 'subtitle' | 'output' | 'database'>('api')
+
+  // Output directory state
+  const [outputDir, setOutputDir] = useState(storage.getOutputDir())
+  const [testSaveStatus, setTestSaveStatus] = useState<'idle' | 'success' | 'error'>('idle')
+  const [testSaveMessage, setTestSaveMessage] = useState('')
   
   // Database migration state
   const [dbStatus, setDbStatus] = useState<{ projects: number; properNouns: number; transcriptions: number } | null>(null)
@@ -58,10 +63,6 @@ export default function SettingsModal({ apiKeys, subtitleSettings, aiPreferences
   const [openaiModel, setOpenaiModel] = useState(aiPreferences.openaiModel)
   const [claudeModel, setClaudeModel] = useState(aiPreferences.claudeModel)
   const [geminiModel, setGeminiModel] = useState(aiPreferences.geminiModel)
-  const [geminiModelScript, setGeminiModelScript] = useState(aiPreferences.geminiModelScript || 'gemini-1.5-pro')
-  const [geminiModelTranslate, setGeminiModelTranslate] = useState(aiPreferences.geminiModelTranslate || aiPreferences.geminiModel)
-  const [geminiModelLight, setGeminiModelLight] = useState(aiPreferences.geminiModelLight || 'gemini-2.0-flash-exp')
-
   // Subtitle Settings state
   const [currentLanguage, setCurrentLanguage] = useState<'en' | 'ja'>(subtitleSettings.currentLanguage)
   const [enSettings, setEnSettings] = useState(subtitleSettings.en)
@@ -143,16 +144,56 @@ export default function SettingsModal({ apiKeys, subtitleSettings, aiPreferences
       openaiModel,
       claudeModel,
       geminiModel,
-      geminiModelScript,
-      geminiModelTranslate,
-      geminiModelLight,
+      geminiModelScript: geminiModel,
+      geminiModelTranslate: geminiModel,
+      geminiModelLight: geminiModel,
     })
+  }
+
+  const handleSaveOutputDir = () => {
+    storage.setOutputDir(outputDir.trim())
+  }
+
+  const handleTestSave = async () => {
+    const dir = outputDir.trim()
+    if (!dir) {
+      setTestSaveStatus('error')
+      setTestSaveMessage('フォルダパスを入力してください')
+      return
+    }
+    setTestSaveStatus('idle')
+    setTestSaveMessage('')
+    try {
+      const res = await fetch('/api/save-to-disk', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          outputDir: dir,
+          subDir: '',
+          filename: `test_${generateTimestamp()}.txt`,
+          content: 'Speech to Text — 書き込みテスト成功',
+        }),
+      })
+      const data = await res.json()
+      if (data.success) {
+        storage.setOutputDir(dir)
+        setTestSaveStatus('success')
+        setTestSaveMessage(`書き込み成功: ${data.filePath}`)
+      } else {
+        setTestSaveStatus('error')
+        setTestSaveMessage(data.error || '書き込み失敗')
+      }
+    } catch (err: any) {
+      setTestSaveStatus('error')
+      setTestSaveMessage(err.message)
+    }
   }
 
   const handleSaveAll = () => {
     handleSaveApiKeys()
     handleSaveSubtitleSettings()
     handleSaveAIPreferences()
+    handleSaveOutputDir()
     onClose()
   }
 
@@ -208,6 +249,23 @@ export default function SettingsModal({ apiKeys, subtitleSettings, aiPreferences
               }}
             >
               字幕設定
+            </button>
+            <button
+              onClick={() => setActiveTab('output')}
+              style={{
+                padding: '0.75rem 1.5rem',
+                fontSize: '13px',
+                fontWeight: 600,
+                borderTop: 'none',
+                borderLeft: 'none',
+                borderRight: 'none',
+                borderBottom: activeTab === 'output' ? '2px solid var(--accent)' : '2px solid transparent',
+                color: activeTab === 'output' ? 'var(--accent)' : 'var(--text-muted)',
+                background: 'transparent',
+                cursor: 'pointer'
+              }}
+            >
+              保存先
             </button>
             <button
               onClick={() => {
@@ -323,58 +381,10 @@ export default function SettingsModal({ apiKeys, subtitleSettings, aiPreferences
                     >
                       {GEMINI_MODELS.map((model) => (
                         <option key={model.value} value={model.value}>
-                          {model.label} {model.recommended ? '（推奨）' : ''}
+                          {model.tier === 'free' ? '🆓 ' : '💰 '}{model.label} {model.recommended ? '（推奨）' : ''} - {model.price}
                         </option>
                       ))}
                     </select>
-                    <div style={{ fontSize: '10px', color: 'var(--text-muted)', marginTop: '0.5rem', paddingTop: '0.5rem', borderTop: '1px solid var(--border)' }}>
-                      <p style={{ marginBottom: '0.25rem', fontWeight: 600 }}>用途別モデル選択:</p>
-                      <div style={{ marginBottom: '0.5rem' }}>
-                        <label style={{ fontSize: '9px', display: 'block', marginBottom: '0.25rem' }}>脚本分析モデル（高機能推奨）:</label>
-                        <select
-                          value={geminiModelScript}
-                          onChange={(e) => setGeminiModelScript(e.target.value)}
-                          className="select"
-                          style={{ fontSize: '10px', width: '100%' }}
-                        >
-                          {GEMINI_MODELS.filter(m => m.value.includes('pro') || m.value.includes('flash')).map((model) => (
-                            <option key={model.value} value={model.value}>
-                              {model.label}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                      <div style={{ marginBottom: '0.5rem' }}>
-                        <label style={{ fontSize: '9px', display: 'block', marginBottom: '0.25rem' }}>翻訳モデル（標準）:</label>
-                        <select
-                          value={geminiModelTranslate}
-                          onChange={(e) => setGeminiModelTranslate(e.target.value)}
-                          className="select"
-                          style={{ fontSize: '10px', width: '100%' }}
-                        >
-                          {GEMINI_MODELS.map((model) => (
-                            <option key={model.value} value={model.value}>
-                              {model.label}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                      <div>
-                        <label style={{ fontSize: '9px', display: 'block', marginBottom: '0.25rem' }}>軽量処理モデル（無料/安価）:</label>
-                        <select
-                          value={geminiModelLight}
-                          onChange={(e) => setGeminiModelLight(e.target.value)}
-                          className="select"
-                          style={{ fontSize: '10px', width: '100%' }}
-                        >
-                          {GEMINI_MODELS.filter(m => m.value.includes('flash') || m.value.includes('exp')).map((model) => (
-                            <option key={model.value} value={model.value}>
-                              {model.label}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                    </div>
                   </div>
 
                   {/* OpenAI */}
@@ -584,6 +594,81 @@ export default function SettingsModal({ apiKeys, subtitleSettings, aiPreferences
                       <li><strong>句読点:</strong> 「。」「、」の適切な使用 / 必要に応じて改行</li>
                     </ul>
                   </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* 保存先タブ */}
+          {activeTab === 'output' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+              <div className="card" style={{ padding: '1.25rem' }}>
+                <h3 style={{ fontSize: '13px', fontWeight: 600, marginBottom: '0.75rem' }}>
+                  💾 ローカル出力フォルダ
+                </h3>
+                <p style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '1rem', lineHeight: 1.6 }}>
+                  書き起こし・字幕ファイルを自動的にこのフォルダに保存します。<br />
+                  例: <code style={{ fontSize: '10px', background: 'var(--bg)', padding: '0.1rem 0.3rem', borderRadius: '3px' }}>D:\Transcriptions</code>
+                </p>
+                <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.75rem' }}>
+                  <input
+                    type="text"
+                    value={outputDir}
+                    onChange={(e) => setOutputDir(e.target.value)}
+                    placeholder="例: D:\Transcriptions"
+                    className="input"
+                    style={{ flex: 1, fontFamily: 'monospace', fontSize: '12px' }}
+                  />
+                  <button
+                    onClick={() => { handleSaveOutputDir(); }}
+                    className="btn"
+                    style={{ padding: '0.5rem 0.75rem', fontSize: '12px', whiteSpace: 'nowrap' }}
+                  >
+                    保存
+                  </button>
+                </div>
+                <button
+                  onClick={handleTestSave}
+                  style={{
+                    padding: '0.5rem 1rem',
+                    fontSize: '12px',
+                    fontWeight: 600,
+                    background: 'var(--accent)',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '6px',
+                    cursor: 'pointer',
+                  }}
+                >
+                  テスト書き込み
+                </button>
+                {testSaveStatus === 'success' && (
+                  <div style={{ marginTop: '0.75rem', fontSize: '11px', color: 'rgb(34, 197, 94)' }}>
+                    ✓ {testSaveMessage}
+                  </div>
+                )}
+                {testSaveStatus === 'error' && (
+                  <div style={{ marginTop: '0.75rem', fontSize: '11px', color: 'rgb(239, 68, 68)' }}>
+                    ✗ {testSaveMessage}
+                  </div>
+                )}
+              </div>
+
+              <div className="card" style={{ padding: '1.25rem' }}>
+                <h3 style={{ fontSize: '13px', fontWeight: 600, marginBottom: '0.75rem' }}>📁 フォルダ構成</h3>
+                <div style={{ fontSize: '11px', color: 'var(--text-muted)', fontFamily: 'monospace', lineHeight: 2 }}>
+                  <div>{outputDir || '{出力フォルダ}'}/</div>
+                  <div style={{ paddingLeft: '1rem' }}>transcriptions/</div>
+                  <div style={{ paddingLeft: '2rem' }}>2026-04-01/</div>
+                  <div style={{ paddingLeft: '3rem' }}>filename_書き起こし_timestamp.txt</div>
+                  <div style={{ paddingLeft: '3rem' }}>filename_書き起こし_timestamp.json</div>
+                  <div style={{ paddingLeft: '1rem' }}>subtitles/</div>
+                  <div style={{ paddingLeft: '2rem' }}>2026-04-01/</div>
+                  <div style={{ paddingLeft: '3rem' }}>filename_sub_timestamp.srt</div>
+                  <div style={{ paddingLeft: '3rem' }}>filename_sub_timestamp.vtt</div>
+                  <div style={{ paddingLeft: '1rem' }}>movie-subtitles/</div>
+                  <div style={{ paddingLeft: '2rem' }}>ProjectName/</div>
+                  <div style={{ paddingLeft: '3rem' }}>subtitles_timestamp.srt</div>
                 </div>
               </div>
             </div>

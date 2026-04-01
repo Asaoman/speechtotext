@@ -1,8 +1,9 @@
 'use client'
 
-import { useState, useEffect } from 'react'
-import { TranscriptionResult } from '@/lib/types'
+import { useState, useEffect, useCallback } from 'react'
+import { TranscriptionResult, TranscriptionProofreadResult, DetectedNoun } from '@/lib/types'
 import { generateSRT, generateVTT, downloadFile, generateTimestamp, storage } from '@/lib/utils'
+import HighlightedTranscriptionText from './HighlightedTranscriptionText'
 
 interface Project {
   id: string
@@ -17,20 +18,57 @@ interface TranscriptionResultProps {
     service?: string
     isNew?: boolean
   }
-  onStartProofreading?: () => void
   onStartSubtitleGeneration?: () => void
   onSaved?: (id: string) => void
+  onRequestProofread?: () => void
+  proofreadResult?: TranscriptionProofreadResult | null
+  isProofreading?: boolean
+  proofreadError?: string | null
+  globalNouns?: DetectedNoun[]
+  onNounApproved?: (noun: DetectedNoun) => void
+  onNounRejected?: (term: string) => void
+  onNounsMerged?: (canonical: string, aliases: string[]) => void
+  highlightTerms?: DetectedNoun[]
+  onNounClickedInText?: (noun: DetectedNoun) => void
+  screeningModel?: string
 }
 
-export default function TranscriptionResultComponent({ result, meta, onStartProofreading, onStartSubtitleGeneration, onSaved }: TranscriptionResultProps) {
+const CATEGORY_LABELS: Record<string, string> = {
+  person: '人名',
+  place: '地名',
+  organization: '組織',
+  work: '作品',
+  technical: '専門用語',
+  other: 'その他',
+}
+
+export default function TranscriptionResultComponent({
+  result,
+  meta,
+  onStartSubtitleGeneration,
+  onSaved,
+  onRequestProofread,
+  proofreadResult,
+  isProofreading,
+  proofreadError,
+  globalNouns = [],
+  onNounApproved,
+  onNounRejected,
+  onNounsMerged,
+  highlightTerms = [],
+  onNounClickedInText,
+  screeningModel,
+}: TranscriptionResultProps) {
   const [projects, setProjects] = useState<Project[]>([])
   const [selectedProjectId, setSelectedProjectId] = useState<string>('')
   const [newProjectName, setNewProjectName] = useState('')
   const [isSaving, setIsSaving] = useState(false)
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saved' | 'error'>('idle')
   const [showProjectSelect, setShowProjectSelect] = useState(false)
+  const [activeSearchNoun, setActiveSearchNoun] = useState<DetectedNoun | null>(null)
+  const [activeOccurrenceIndex, setActiveOccurrenceIndex] = useState(0)
+  const [activeOccurrenceCount, setActiveOccurrenceCount] = useState(0)
 
-  // プロジェクト一覧を取得
   useEffect(() => {
     fetchProjects()
     const currentProjectId = storage.getCurrentProjectId()
@@ -38,6 +76,28 @@ export default function TranscriptionResultComponent({ result, meta, onStartProo
       setSelectedProjectId(currentProjectId)
     }
   }, [])
+
+  // Reset noun search when screening changes
+  useEffect(() => {
+    setActiveSearchNoun(null)
+    setActiveOccurrenceIndex(0)
+    setActiveOccurrenceCount(0)
+  }, [proofreadResult])
+
+  const handleOccurrenceCountChange = useCallback((count: number) => {
+    setActiveOccurrenceCount(count)
+  }, [])
+
+  // Compute occurrence count directly from text (for immediate display on pill click,
+  // before the child component reports back via onOccurrenceCountChange)
+  const computeOccurrenceCount = useCallback((noun: DetectedNoun): number => {
+    const lower = result.text.toLowerCase()
+    const term = noun.term.toLowerCase()
+    if (!term) return 0
+    let count = 0, pos = 0
+    while ((pos = lower.indexOf(term, pos)) !== -1) { count++; pos += term.length }
+    return count
+  }, [result.text])
 
   const fetchProjects = async () => {
     try {
@@ -51,10 +111,8 @@ export default function TranscriptionResultComponent({ result, meta, onStartProo
     }
   }
 
-  // 新規プロジェクト作成
   const handleCreateProject = async () => {
     if (!newProjectName.trim()) return
-
     try {
       const res = await fetch('/api/projects', {
         method: 'POST',
@@ -73,16 +131,13 @@ export default function TranscriptionResultComponent({ result, meta, onStartProo
     }
   }
 
-  // 書き起こし結果を保存
   const handleSave = async () => {
     if (!selectedProjectId) {
       setShowProjectSelect(true)
       return
     }
-
     setIsSaving(true)
     setSaveStatus('idle')
-
     try {
       const res = await fetch('/api/transcriptions', {
         method: 'POST',
@@ -97,7 +152,6 @@ export default function TranscriptionResultComponent({ result, meta, onStartProo
           words: result.words,
         })
       })
-
       if (res.ok) {
         const data = await res.json()
         setSaveStatus('saved')
@@ -116,32 +170,33 @@ export default function TranscriptionResultComponent({ result, meta, onStartProo
 
   const handleDownload = (format: 'txt' | 'json' | 'srt' | 'vtt') => {
     const timestamp = generateTimestamp()
-
+    const baseName = meta?.fileName?.replace(/\.[^.]+$/, '') || 'transcription'
     switch (format) {
       case 'txt':
-        downloadFile(result.text, `transcription_${timestamp}.txt`, 'text/plain')
+        downloadFile(result.text, `${baseName}_書き起こし_${timestamp}.txt`, 'text/plain')
         break
       case 'json':
-        const jsonContent = JSON.stringify(result, null, 2)
-        downloadFile(jsonContent, `transcription_${timestamp}.json`, 'application/json')
+        downloadFile(JSON.stringify(result, null, 2), `${baseName}_書き起こし_${timestamp}.json`, 'application/json')
         break
-      case 'srt':
+      case 'srt': {
         const srtContent = generateSRT(result)
-        if (srtContent) {
-          downloadFile(srtContent, `transcription_${timestamp}.srt`, 'text/plain')
-        }
+        if (srtContent) downloadFile(srtContent, `${baseName}_sub_${timestamp}.srt`, 'text/plain')
         break
-      case 'vtt':
+      }
+      case 'vtt': {
         const vttContent = generateVTT(result)
-        if (vttContent) {
-          downloadFile(vttContent, `transcription_${timestamp}.vtt`, 'text/vtt')
-        }
+        if (vttContent) downloadFile(vttContent, `${baseName}_sub_${timestamp}.vtt`, 'text/vtt')
         break
+      }
     }
   }
 
+  // All detected nouns (new ones only)
+  const newNouns = proofreadResult?.detectedNouns.filter((n) => n.isNew) ?? []
+
   return (
     <div className="card" style={{ padding: '1rem' }}>
+      {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
         <h3 style={{ fontSize: '13px', fontWeight: 600 }}>変換結果</h3>
         <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
@@ -160,10 +215,7 @@ export default function TranscriptionResultComponent({ result, meta, onStartProo
               fontWeight: 600,
               background: meta?.id ? 'var(--border)' : 'var(--accent)',
               color: meta?.id ? 'var(--text-muted)' : 'white',
-              borderTop: 'none',
-              borderLeft: 'none',
-              borderRight: 'none',
-              borderBottom: 'none',
+              border: 'none',
               borderRadius: '4px',
               cursor: meta?.id ? 'default' : 'pointer',
               opacity: isSaving ? 0.7 : 1
@@ -174,43 +226,18 @@ export default function TranscriptionResultComponent({ result, meta, onStartProo
         </div>
       </div>
 
-      {/* プロジェクト選択（保存時に表示） */}
+      {/* Project select */}
       {showProjectSelect && (
-        <div style={{ 
-          padding: '1rem', 
-          marginBottom: '1rem', 
-          background: 'var(--bg)', 
-          borderRadius: '6px',
-          borderWidth: '1px',
-          borderStyle: 'solid',
-          borderColor: 'var(--border)'
-        }}>
-          <div style={{ fontSize: '12px', fontWeight: 600, marginBottom: '0.75rem' }}>
-            保存先プロジェクトを選択
-          </div>
+        <div style={{ padding: '1rem', marginBottom: '1rem', background: 'var(--bg)', borderRadius: '6px', border: '1px solid var(--border)' }}>
+          <div style={{ fontSize: '12px', fontWeight: 600, marginBottom: '0.75rem' }}>保存先プロジェクトを選択</div>
           <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.75rem' }}>
             <select
               value={selectedProjectId}
-              onChange={(e) => {
-                setSelectedProjectId(e.target.value)
-                storage.setCurrentProjectId(e.target.value)
-              }}
-              style={{
-                flex: 1,
-                padding: '0.5rem',
-                fontSize: '12px',
-                background: 'var(--card-bg)',
-                color: 'var(--text)',
-                borderWidth: '1px',
-                borderStyle: 'solid',
-                borderColor: 'var(--border)',
-                borderRadius: '4px'
-              }}
+              onChange={(e) => { setSelectedProjectId(e.target.value); storage.setCurrentProjectId(e.target.value) }}
+              style={{ flex: 1, padding: '0.5rem', fontSize: '12px', background: 'var(--card-bg)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: '4px' }}
             >
               <option value="">プロジェクトを選択...</option>
-              {projects.map(p => (
-                <option key={p.id} value={p.id}>{p.name}</option>
-              ))}
+              {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
             </select>
           </div>
           <div style={{ display: 'flex', gap: '0.5rem' }}>
@@ -219,81 +246,13 @@ export default function TranscriptionResultComponent({ result, meta, onStartProo
               value={newProjectName}
               onChange={(e) => setNewProjectName(e.target.value)}
               placeholder="新規プロジェクト名"
-              style={{
-                flex: 1,
-                padding: '0.5rem',
-                fontSize: '12px',
-                background: 'var(--card-bg)',
-                color: 'var(--text)',
-                borderWidth: '1px',
-                borderStyle: 'solid',
-                borderColor: 'var(--border)',
-                borderRadius: '4px'
-              }}
+              style={{ flex: 1, padding: '0.5rem', fontSize: '12px', background: 'var(--card-bg)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: '4px' }}
             />
-            <button
-              onClick={handleCreateProject}
-              disabled={!newProjectName.trim()}
-              style={{
-                padding: '0.5rem 1rem',
-                fontSize: '11px',
-                fontWeight: 600,
-                background: 'var(--accent)',
-                color: 'white',
-                borderTop: 'none',
-                borderLeft: 'none',
-                borderRight: 'none',
-                borderBottom: 'none',
-                borderRadius: '4px',
-                cursor: 'pointer',
-                opacity: !newProjectName.trim() ? 0.5 : 1
-              }}
-            >
-              作成
-            </button>
+            <button onClick={handleCreateProject} disabled={!newProjectName.trim()} style={{ padding: '0.5rem 1rem', fontSize: '11px', fontWeight: 600, background: 'var(--accent)', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', opacity: !newProjectName.trim() ? 0.5 : 1 }}>作成</button>
           </div>
           <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.75rem' }}>
-            <button
-              onClick={() => setShowProjectSelect(false)}
-              style={{
-                flex: 1,
-                padding: '0.5rem',
-                fontSize: '11px',
-                background: 'var(--border)',
-                color: 'var(--text)',
-                borderTop: 'none',
-                borderLeft: 'none',
-                borderRight: 'none',
-                borderBottom: 'none',
-                borderRadius: '4px',
-                cursor: 'pointer'
-              }}
-            >
-              キャンセル
-            </button>
-            <button
-              onClick={() => {
-                setShowProjectSelect(false)
-                if (selectedProjectId) handleSave()
-              }}
-              disabled={!selectedProjectId}
-              style={{
-                flex: 1,
-                padding: '0.5rem',
-                fontSize: '11px',
-                fontWeight: 600,
-                background: selectedProjectId ? 'var(--accent)' : 'var(--border)',
-                color: selectedProjectId ? 'white' : 'var(--text-muted)',
-                borderTop: 'none',
-                borderLeft: 'none',
-                borderRight: 'none',
-                borderBottom: 'none',
-                borderRadius: '4px',
-                cursor: selectedProjectId ? 'pointer' : 'default'
-              }}
-            >
-              保存する
-            </button>
+            <button onClick={() => setShowProjectSelect(false)} style={{ flex: 1, padding: '0.5rem', fontSize: '11px', background: 'var(--border)', color: 'var(--text)', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>キャンセル</button>
+            <button onClick={() => { setShowProjectSelect(false); if (selectedProjectId) handleSave() }} disabled={!selectedProjectId} style={{ flex: 1, padding: '0.5rem', fontSize: '11px', fontWeight: 600, background: selectedProjectId ? 'var(--accent)' : 'var(--border)', color: selectedProjectId ? 'white' : 'var(--text-muted)', border: 'none', borderRadius: '4px', cursor: selectedProjectId ? 'pointer' : 'default' }}>保存する</button>
           </div>
         </div>
       )}
@@ -309,63 +268,177 @@ export default function TranscriptionResultComponent({ result, meta, onStartProo
         </div>
       )}
 
+      {/* Main text + integrated screening */}
       <div style={{ marginBottom: '1rem' }}>
-        <label style={{ fontSize: '11px', fontWeight: 500, color: 'var(--text-muted)', display: 'block', marginBottom: '0.5rem' }}>
-          変換されたテキスト
-        </label>
-        <textarea
-          value={result.text}
-          readOnly
-          className="textarea"
-          rows={12}
+        {/* Status row */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+          <span style={{ fontSize: '11px', fontWeight: 500, color: 'var(--text-muted)' }}>変換結果 / スクリーニング</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            {screeningModel && (
+              <span style={{ fontSize: '9px', color: 'var(--text-muted)', fontFamily: 'monospace', background: 'var(--bg)', padding: '0.1rem 0.35rem', borderRadius: '3px', border: '1px solid var(--border)' }}>
+                {screeningModel}
+              </span>
+            )}
+            {isProofreading && (
+              <span style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '12px', color: 'var(--text-muted)' }}>
+                <span style={{ display: 'inline-block', width: '11px', height: '11px', borderRadius: '50%', border: '1.5px solid var(--accent)', borderTopColor: 'transparent', animation: 'spin 0.8s linear infinite', flexShrink: 0 }} />
+                スクリーニング中...
+              </span>
+            )}
+            {!isProofreading && proofreadError && (
+              <span
+                title={proofreadError}
+                style={{ fontSize: '11px', color: '#ef4444', fontWeight: 600, maxWidth: '220px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', cursor: 'help' }}
+              >
+                ⚠ {proofreadError}
+              </span>
+            )}
+            {!isProofreading && !proofreadError && newNouns.length > 0 && (
+              <span style={{ fontSize: '12px', color: '#f59e0b', fontWeight: 600 }}>
+                ● {newNouns.length}語 検出 — クリックでライブラリ追加
+              </span>
+            )}
+            {!isProofreading && !proofreadError && proofreadResult && newNouns.length === 0 && (
+              <span style={{ fontSize: '12px', color: '#22c55e', fontWeight: 600 }}>
+                ✓ スクリーニング完了
+              </span>
+            )}
+            {onRequestProofread && !isProofreading && (
+              <button
+                onClick={onRequestProofread}
+                style={{ fontSize: '11px', padding: '0.15rem 0.5rem', background: 'none', border: '1px solid var(--border)', borderRadius: '4px', cursor: 'pointer', color: 'var(--text-muted)' }}
+              >
+                {proofreadResult || proofreadError ? '再分析' : '分析'}
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Detected nouns — pill strip with Ctrl+F navigation */}
+        {proofreadResult && !isProofreading && newNouns.length > 0 && (
+          <div style={{ marginBottom: '0.5rem', padding: '0.5rem 0.75rem', background: 'var(--bg-elevated)', borderRadius: '6px', border: '1px solid var(--border)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap' }}>
+              <span style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-muted)', flexShrink: 0 }}>検出:</span>
+              {newNouns.map((noun, i) => {
+                const isActive = activeSearchNoun?.term === noun.term
+                const borderColor = noun.confidence < 0.6
+                  ? 'rgba(239,68,68,0.4)'
+                  : noun.confidence < 0.75
+                    ? 'rgba(245,158,11,0.4)'
+                    : 'var(--border)'
+                return (
+                  <span
+                    key={i}
+                    onClick={() => {
+                      if (isActive) {
+                        setActiveOccurrenceIndex((p) => (p + 1) % Math.max(1, activeOccurrenceCount))
+                      } else {
+                        setActiveSearchNoun(noun)
+                        setActiveOccurrenceIndex(0)
+                        setActiveOccurrenceCount(computeOccurrenceCount(noun))
+                      }
+                    }}
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '0.25rem',
+                      fontSize: '12px',
+                      padding: '0.2rem 0.45rem 0.2rem 0.55rem',
+                      borderRadius: '20px',
+                      background: isActive ? 'var(--accent)' : 'var(--bg)',
+                      border: `1.5px solid ${isActive ? 'var(--accent)' : borderColor}`,
+                      color: isActive ? 'white' : 'var(--text)',
+                      cursor: 'pointer',
+                      transition: 'all 0.15s',
+                    }}
+                    title={`${CATEGORY_LABELS[noun.category] ?? noun.category} — 確信度 ${Math.round(noun.confidence * 100)}% / クリックでテキスト内を検索`}
+                  >
+                    <span style={{ fontSize: '8px', color: isActive ? 'rgba(255,255,255,0.8)' : noun.confidence < 0.6 ? '#ef4444' : noun.confidence < 0.75 ? '#f59e0b' : '#22c55e' }}>●</span>
+                    {noun.term}
+                    {noun.reading && (
+                      <span style={{ fontSize: '10px', color: isActive ? 'rgba(255,255,255,0.7)' : 'var(--text-muted)' }}>({noun.reading})</span>
+                    )}
+                    <button
+                      onClick={(e) => { e.stopPropagation(); onNounApproved?.(noun) }}
+                      title="ライブラリに追加"
+                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: isActive ? 'rgba(255,255,255,0.9)' : '#22c55e', fontSize: '14px', padding: 0, lineHeight: 1, fontWeight: 700 }}
+                    >
+                      ＋
+                    </button>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); onNounRejected?.(noun.term) }}
+                      title="スキップ"
+                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: isActive ? 'rgba(255,255,255,0.6)' : 'var(--text-muted)', fontSize: '12px', padding: 0, lineHeight: 1, opacity: 0.7 }}
+                    >
+                      ×
+                    </button>
+                  </span>
+                )
+              })}
+
+              {/* Ctrl+F occurrence counter */}
+              {activeSearchNoun && (
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.3rem', fontSize: '12px', color: 'var(--text-muted)', marginLeft: '0.25rem', padding: '0.1rem 0.4rem', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: '6px' }}>
+                  <span style={{ color: activeOccurrenceCount === 0 ? '#ef4444' : 'var(--accent)', fontWeight: 700, minWidth: '2.5rem', textAlign: 'center' }}>
+                    {activeOccurrenceCount === 0 ? '未検出' : `${activeOccurrenceIndex + 1} / ${activeOccurrenceCount}`}
+                  </span>
+                  {activeOccurrenceCount > 0 && (
+                    <>
+                      <button
+                        onClick={() => setActiveOccurrenceIndex((p) => (p - 1 + activeOccurrenceCount) % activeOccurrenceCount)}
+                        style={{ background: 'var(--border)', border: 'none', borderRadius: '4px', cursor: 'pointer', color: 'var(--text)', fontSize: '14px', padding: '0.15rem 0.5rem', lineHeight: 1, fontWeight: 700 }}
+                      >
+                        ‹
+                      </button>
+                      <button
+                        onClick={() => setActiveOccurrenceIndex((p) => (p + 1) % activeOccurrenceCount)}
+                        style={{ background: 'var(--border)', border: 'none', borderRadius: '4px', cursor: 'pointer', color: 'var(--text)', fontSize: '14px', padding: '0.15rem 0.5rem', lineHeight: 1, fontWeight: 700 }}
+                      >
+                        ›
+                      </button>
+                    </>
+                  )}
+                  <button
+                    onClick={() => { setActiveSearchNoun(null); setActiveOccurrenceIndex(0) }}
+                    style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: '14px', padding: '0 0.1rem', lineHeight: 1, opacity: 0.7 }}
+                  >
+                    ✕
+                  </button>
+                </span>
+              )}
+
+              <button
+                onClick={() => newNouns.forEach((n) => onNounApproved?.(n))}
+                style={{ fontSize: '11px', padding: '0.2rem 0.5rem', background: '#22c55e', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', marginLeft: 'auto', flexShrink: 0 }}
+              >
+                全てライブラリ追加
+              </button>
+            </div>
+          </div>
+        )}
+
+        <HighlightedTranscriptionText
+          text={result.text}
+          highlightTerms={highlightTerms}
+          onClickTerm={onNounClickedInText}
+          activeNoun={activeSearchNoun}
+          activeOccurrenceIndex={activeOccurrenceIndex}
+          onOccurrenceCountChange={handleOccurrenceCountChange}
         />
       </div>
 
+      {/* Download */}
       <div>
-        <h3 style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text)', marginBottom: '0.75rem' }}>
-          📥 ダウンロード
-        </h3>
+        <h3 style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text)', marginBottom: '0.75rem' }}>📥 ダウンロード</h3>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '0.5rem' }}>
-          <button
-            onClick={() => handleDownload('txt')}
-            className="card"
-            style={{ padding: '1rem 0.75rem', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', border: '1px solid var(--border)', transition: 'all 0.2s' }}
-          >
-            <svg style={{ width: '24px', height: '24px', color: 'var(--accent)' }} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
-            </svg>
-            <span style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text)' }}>TXT</span>
-          </button>
-          <button
-            onClick={() => handleDownload('json')}
-            className="card"
-            style={{ padding: '1rem 0.75rem', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', border: '1px solid var(--border)', transition: 'all 0.2s' }}
-          >
-            <svg style={{ width: '24px', height: '24px', color: 'var(--accent)' }} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
-            </svg>
-            <span style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text)' }}>JSON</span>
-          </button>
-          <button
-            onClick={() => handleDownload('srt')}
-            className="card"
-            style={{ padding: '1rem 0.75rem', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', border: '1px solid var(--border)', transition: 'all 0.2s' }}
-          >
-            <svg style={{ width: '24px', height: '24px', color: 'var(--accent)' }} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
-            </svg>
-            <span style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text)' }}>SRT</span>
-          </button>
-          <button
-            onClick={() => handleDownload('vtt')}
-            className="card"
-            style={{ padding: '1rem 0.75rem', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', border: '1px solid var(--border)', transition: 'all 0.2s' }}
-          >
-            <svg style={{ width: '24px', height: '24px', color: 'var(--accent)' }} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 4v16M17 4v16M3 8h4m10 0h4M3 12h18M3 16h4m10 0h4M4 20h16a1 1 0 001-1V5a1 1 0 00-1-1H4a1 1 0 00-1 1v14a1 1 0 001 1z" />
-            </svg>
-            <span style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text)' }}>VTT</span>
-          </button>
+          {(['txt', 'json', 'srt', 'vtt'] as const).map((fmt) => (
+            <button key={fmt} onClick={() => handleDownload(fmt)} className="card" style={{ padding: '1rem 0.75rem', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', border: '1px solid var(--border)', transition: 'all 0.2s' }}>
+              <svg style={{ width: '24px', height: '24px', color: 'var(--accent)' }} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
+              </svg>
+              <span style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text)' }}>{fmt.toUpperCase()}</span>
+            </button>
+          ))}
         </div>
         {result.segments && result.segments.some(seg => seg.speaker) && (
           <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '0.5rem', textAlign: 'center' }}>
@@ -374,37 +447,23 @@ export default function TranscriptionResultComponent({ result, meta, onStartProo
         )}
       </div>
 
-      {(onStartProofreading || onStartSubtitleGeneration) && (
-        <>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '0.75rem', marginTop: '1rem' }}>
-            {onStartProofreading && (
-              <button
-                onClick={onStartProofreading}
-                className="btn-primary"
-                style={{ padding: '0.75rem', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem', fontSize: '13px', fontWeight: 600 }}
-              >
-                <svg style={{ width: '16px', height: '16px' }} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                </svg>
-                校正を開始
-              </button>
-            )}
-            {onStartSubtitleGeneration && (
-              <button
-                onClick={onStartSubtitleGeneration}
-                className="btn-primary"
-                style={{ padding: '0.75rem', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem', fontSize: '13px', fontWeight: 600 }}
-              >
-                <svg style={{ width: '16px', height: '16px' }} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                </svg>
-                字幕を生成
-              </button>
-            )}
-          </div>
-        </>
+      {/* Action buttons */}
+      {onStartSubtitleGeneration && (
+        <div style={{ marginTop: '1rem' }}>
+          <button
+            onClick={onStartSubtitleGeneration}
+            className="btn-primary"
+            style={{ width: '100%', padding: '0.75rem', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem', fontSize: '13px', fontWeight: 600 }}
+          >
+            <svg style={{ width: '16px', height: '16px' }} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+            </svg>
+            字幕を生成
+          </button>
+        </div>
       )}
 
+      {/* Segment details */}
       {result.segments && result.segments.length > 0 && (
         <details className="card" style={{ marginTop: '1rem', overflow: 'hidden' }}>
           <summary style={{ cursor: 'pointer', padding: '0.75rem 1rem', fontSize: '12px', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -417,17 +476,11 @@ export default function TranscriptionResultComponent({ result, meta, onStartProo
             {result.segments.map((segment, index) => (
               <div key={index} className="card" style={{ padding: '0.75rem' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem', flexWrap: 'wrap' }}>
-                  <span className="badge" style={{ fontSize: '10px' }}>
-                    #{index + 1}
-                  </span>
+                  <span className="badge" style={{ fontSize: '10px' }}>#{index + 1}</span>
                   <span className="badge" style={{ fontSize: '10px', fontFamily: 'monospace', color: 'var(--text-muted)' }}>
                     {segment.start.toFixed(2)}s - {segment.end.toFixed(2)}s
                   </span>
-                  {segment.speaker && (
-                    <span className="badge" style={{ fontSize: '10px' }}>
-                      話者 {segment.speaker}
-                    </span>
-                  )}
+                  {segment.speaker && <span className="badge" style={{ fontSize: '10px' }}>話者 {segment.speaker}</span>}
                 </div>
                 <p style={{ fontSize: '12px' }}>{segment.text}</p>
               </div>
@@ -447,16 +500,7 @@ export default function TranscriptionResultComponent({ result, meta, onStartProo
           <div style={{ padding: '1rem' }}>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
               {result.words.slice(0, 100).map((word, index) => (
-                <span
-                  key={index}
-                  className="badge"
-                  title={`${word.start.toFixed(2)}s${(word as any).speaker ? ` - ${(word as any).speaker}` : ''}`}
-                  style={{
-                    fontSize: '11px',
-                    cursor: 'default',
-                    backgroundColor: (word as any).speaker ? 'var(--accent-subtle)' : undefined
-                  }}
-                >
+                <span key={index} className="badge" title={`${word.start.toFixed(2)}s${(word as any).speaker ? ` - ${(word as any).speaker}` : ''}`} style={{ fontSize: '11px', cursor: 'default', backgroundColor: (word as any).speaker ? 'var(--accent-subtle)' : undefined }}>
                   {word.word}
                 </span>
               ))}

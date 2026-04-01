@@ -423,7 +423,7 @@ No explanations, no numbering, no markdown - just the text with line breaks.`
 // Geminiで改行位置を最適化
 async function optimizeWithGemini(text: string, maxCharsPerLine: number, maxLines: number, language: 'en' | 'ja', apiKey: string): Promise<string[]> {
   const genAI = new GoogleGenerativeAI(apiKey)
-  const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash-lite' })
+  const model = genAI.getGenerativeModel({ model: 'gemini-3-flash-preview' })
 
   const prompt = language === 'en'
     ? `You are a professional subtitle editor following Netflix/BBC industry standards. Apply comprehensive subtitle creation methodology to optimize line breaks.

@@ -44,6 +44,10 @@ export interface ProofreadingResult {
   service?: string;
   model?: string;
   error?: string;
+  // フォールバック情報（Geminiクォータ制限時）
+  fallbackUsed?: boolean;
+  originalModel?: string;
+  fallbackReason?: string;
 }
 
 export interface ProofreadingRequest {
@@ -355,6 +359,62 @@ export interface BatchTranslationResult {
   translatedCount: number;
   failedCount: number;
   errors?: string[];
+}
+
+// ============================================
+// 字幕校正（Proofread）関連の型定義
+// ============================================
+
+export type SubtitleProofreadIssueType = 'linebreak' | 'cutpoint' | 'properNoun';
+
+export interface SubtitleProofreadIssue {
+  subtitleIndex: number;        // 対象エントリのindex（1始まり）
+  type: SubtitleProofreadIssueType;
+  severity: 'error' | 'warning';
+  message: string;              // 問題の説明（日本語）
+  suggestion?: string;          // 修正案テキスト
+}
+
+export interface SubtitleProofreadResult {
+  success: boolean;
+  issues: SubtitleProofreadIssue[];
+  error?: string;
+}
+
+// ============================================
+// 書き起こし校正（Transcription Proofread）関連の型定義
+// ============================================
+
+export type TranscriptionIssueType =
+  | 'homophone'      // 同音異義語（行く/逝く）
+  | 'properNoun'     // 固有名詞の誤認識
+  | 'filler'         // フィラー（えーと、あのー）
+  | 'context'        // 文脈的に不自然
+  | 'punctuation';   // 句読点の誤り
+
+export interface TranscriptionProofreadIssue {
+  original: string;
+  type: TranscriptionIssueType;
+  severity: 'error' | 'warning' | 'info';
+  message: string;
+  suggestion?: string;
+  confidence: number;
+}
+
+export interface DetectedNoun {
+  term: string;
+  reading?: string;
+  category: ProperNounCategory;
+  context: string;
+  confidence: number;
+  isNew: boolean;
+}
+
+export interface TranscriptionProofreadResult {
+  success: boolean;
+  issues: TranscriptionProofreadIssue[];
+  detectedNouns: DetectedNoun[];
+  error?: string;
 }
 
 // ============================================

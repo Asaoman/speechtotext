@@ -1,12 +1,8 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { TranscriptionWord, TranscriptionResult, SubtitleSettings, SubtitleGenerationResult, SubtitleEntry, AIPreferences } from '@/lib/types'
 import { downloadFile, generateTimestamp, formatTimestampSRT, formatTimestampVTT } from '@/lib/utils'
-import ProperNounsModalMinimal from './ProperNounsModalMinimal'
-import ProjectSelectorCard from './common/ProjectSelectorCard'
-import FileUploadSection from './common/FileUploadSection'
-import { useProject } from '@/hooks/useProject'
 
 interface SubtitleGeneratorProps {
   transcriptionResult?: TranscriptionResult | null  // オプショナルに変更
@@ -125,24 +121,9 @@ export default function SubtitleGenerator({ transcriptionResult, subtitleSetting
   const [editingSubtitles, setEditingSubtitles] = useState<SubtitleEntry[]>([])
   const [editingIndex, setEditingIndex] = useState<number | null>(null)
   const [showTimeline, setShowTimeline] = useState(false)
-  const [fileUploadError, setFileUploadError] = useState('')
-  const [showProperNounsModal, setShowProperNounsModal] = useState(false)
   const [inputText, setInputText] = useState(transcriptionResult?.text || '')
   const [textTab, setTextTab] = useState<'input' | 'preview'>('input')
-
-  // プロジェクト管理（カスタムフック）
-  const {
-    projects,
-    selectedProjectId,
-    customContext,
-    showNewProjectInput,
-    newProjectName,
-    setCustomContext,
-    setShowNewProjectInput,
-    setNewProjectName,
-    handleProjectSelect,
-    handleCreateProject,
-  } = useProject()
+  const srtInputRef = useRef<HTMLInputElement>(null)
 
   // ローカル設定（字幕生成時に使用）
   const [localLanguage, setLocalLanguage] = useState<'en' | 'ja'>(subtitleSettings.currentLanguage)
@@ -229,9 +210,19 @@ export default function SubtitleGenerator({ transcriptionResult, subtitleSetting
     return allWords
   }
 
-  // ファイルアップロード処理（FileUploadSectionから呼ばれる）
-  const handleFileLoaded = (text: string, fileName: string) => {
-    setInputText(text)
+  // SRT校正: ファイルを読み込んで編集モードに入る
+  const handleSRTCorrection = (file: File) => {
+    const reader = new FileReader()
+    reader.onload = (e) => {
+      const content = e.target?.result as string
+      const entries = parseSRTFile(content)
+      if (entries.length > 0) {
+        setEditingSubtitles(entries)
+        setResult({ success: true, subtitles: entries, srtContent: content, vttContent: '' })
+        setTextTab('preview')
+      }
+    }
+    reader.readAsText(file, 'utf-8')
   }
 
   // SubtitleEntry[]からSRTを生成
@@ -439,16 +430,8 @@ export default function SubtitleGenerator({ transcriptionResult, subtitleSetting
 
       {/* テキスト */}
       <div className="card" style={{ padding: '1rem' }}>
-        <FileUploadSection
-          onFileLoaded={handleFileLoaded}
-          onError={setFileUploadError}
-          acceptedFormats={['.srt']}
-          isOpen={!navigatedFromTranscription}
-          parseSRT={false}
-        />
-
-        {/* タブ */}
-        <div style={{ display: 'flex', borderBottomWidth: '1px', borderBottomStyle: 'solid', borderBottomColor: 'var(--border)', marginBottom: '1rem' }}>
+        {/* タブ + 字幕校正ボタン */}
+        <div style={{ display: 'flex', alignItems: 'center', borderBottomWidth: '1px', borderBottomStyle: 'solid', borderBottomColor: 'var(--border)', marginBottom: '1rem' }}>
           <button
             onClick={() => setTextTab('input')}
             style={{
@@ -487,6 +470,25 @@ export default function SubtitleGenerator({ transcriptionResult, subtitleSetting
           >
             SRTプレビュー
           </button>
+          <div style={{ flex: 1 }} />
+          <button
+            onClick={() => srtInputRef.current?.click()}
+            className="btn"
+            style={{ fontSize: '11px', padding: '0.3rem 0.75rem', marginBottom: '-1px', borderBottom: '2px solid transparent' }}
+          >
+            📂 字幕校正
+          </button>
+          <input
+            ref={srtInputRef}
+            type="file"
+            accept=".srt,.vtt"
+            style={{ display: 'none' }}
+            onChange={(e) => {
+              const file = e.target.files?.[0]
+              if (file) handleSRTCorrection(file)
+              e.target.value = ''
+            }}
+          />
         </div>
 
         {/* 入力テキスト */}
@@ -512,28 +514,6 @@ export default function SubtitleGenerator({ transcriptionResult, subtitleSetting
           />
         )}
       </div>
-
-      {/* プロジェクト設定 */}
-      <ProjectSelectorCard
-        projects={projects}
-        selectedProjectId={selectedProjectId}
-        customContext={customContext}
-        showNewProjectInput={showNewProjectInput}
-        newProjectName={newProjectName}
-        aiPreferences={aiPreferences}
-        onProjectSelect={handleProjectSelect}
-        onContextChange={setCustomContext}
-        onCreateProject={handleCreateProject}
-        onToggleNewProjectInput={() => setShowNewProjectInput(!showNewProjectInput)}
-        onNewProjectNameChange={setNewProjectName}
-        onCancelNewProject={() => {
-          setShowNewProjectInput(false)
-          setNewProjectName('')
-        }}
-        showProperNounsButton={true}
-        onOpenProperNouns={() => setShowProperNounsModal(true)}
-      />
-
 
       {!hasRealWords && hasTranscriptionData && (
         <p style={{ fontSize: '10px', color: '#92400e', padding: '0.5rem', backgroundColor: '#fffbeb', borderRadius: '4px', marginBottom: '0.75rem' }}>
@@ -935,13 +915,6 @@ export default function SubtitleGenerator({ transcriptionResult, subtitleSetting
         </div>
       )}
 
-      {/* 固有名詞管理モーダル */}
-      {showProperNounsModal && (
-        <ProperNounsModalMinimal
-          onClose={() => setShowProperNounsModal(false)}
-          selectedProjectId={selectedProjectId}
-        />
-      )}
     </div>
   )
 }

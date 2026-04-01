@@ -192,15 +192,15 @@ export const DEFAULT_SUBTITLE_SETTINGS: SubtitleSettings = {
   lineBreakService: 'gemini', // 最もコスパの良いGemini 1.5 Flashをデフォルト
 };
 
-// デフォルトAI設定（最もコスパの良い組み合わせ）
+// デフォルトAI設定（Gemini 2.5系推奨）
 export const DEFAULT_AI_PREFERENCES: AIPreferences = {
-  defaultService: 'gemini', // 最もコスパが良い
+  defaultService: 'gemini', // Gemini 2.5 Pro（安定版・高性能）
   openaiModel: 'gpt-4o-mini', // OpenAIで最もコスパが良い
   claudeModel: 'claude-3-5-sonnet-20241022', // Claudeで最もコスパが良い
-  geminiModel: 'gemini-2.5-flash-lite', // 最新の安価モデル（入力$0.10/1M tokens、出力$0.40/1M tokens）
-  geminiModelScript: 'gemini-1.5-pro', // 脚本分析用（高機能）
-  geminiModelTranslate: 'gemini-2.5-flash-lite', // 翻訳用（標準）
-  geminiModelLight: 'gemini-2.0-flash-exp', // 軽量処理用（無料）
+  geminiModel: 'gemini-3-flash-preview', // Gemini 3 Flash（最新・高性能）
+  geminiModelScript: 'gemini-3-flash-preview', // 脚本分析用（最新・高性能）
+  geminiModelTranslate: 'gemini-3-flash-preview', // 翻訳用（最新・高性能）
+  geminiModelLight: 'gemini-3-flash-preview', // スクリーニング用
 };
 
 // ローカルストレージ操作
@@ -378,6 +378,23 @@ export const storage = {
       }
 
       storage.setProjects(projects);
+    }
+  },
+
+  getOutputDir: (): string => {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem('outputDir') || ''
+    }
+    return ''
+  },
+
+  setOutputDir: (dir: string) => {
+    if (typeof window !== 'undefined') {
+      if (dir) {
+        localStorage.setItem('outputDir', dir)
+      } else {
+        localStorage.removeItem('outputDir')
+      }
     }
   },
 
