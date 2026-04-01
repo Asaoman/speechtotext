@@ -31,6 +31,7 @@ interface TranscriptionResultProps {
   highlightTerms?: DetectedNoun[]
   onNounClickedInText?: (noun: DetectedNoun) => void
   screeningModel?: string
+  autoDetectedContext?: string
 }
 
 const CATEGORY_LABELS: Record<string, string> = {
@@ -58,7 +59,9 @@ export default function TranscriptionResultComponent({
   highlightTerms = [],
   onNounClickedInText,
   screeningModel,
+  autoDetectedContext,
 }: TranscriptionResultProps) {
+  const [dismissedIssues, setDismissedIssues] = useState<Set<string>>(new Set())
   const [projects, setProjects] = useState<Project[]>([])
   const [selectedProjectId, setSelectedProjectId] = useState<string>('')
   const [newProjectName, setNewProjectName] = useState('')
@@ -414,6 +417,55 @@ export default function TranscriptionResultComponent({
                 全てライブラリ追加
               </button>
             </div>
+          </div>
+        )}
+
+        {/* 誤認識候補セクション */}
+        {proofreadResult && !isProofreading && proofreadResult.issues && proofreadResult.issues.length > 0 && (
+          <div style={{ marginBottom: '0.5rem', padding: '0.5rem 0.75rem', background: 'rgba(239,68,68,0.06)', borderRadius: '6px', border: '1px solid rgba(239,68,68,0.25)' }}>
+            <div style={{ fontSize: '11px', fontWeight: 700, color: '#ef4444', marginBottom: '0.4rem' }}>
+              ⚠ 音声認識の誤り候補 ({proofreadResult.issues.filter(i => !dismissedIssues.has(i.original)).length}件)
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+              {proofreadResult.issues
+                .filter(issue => !dismissedIssues.has(issue.original))
+                .map((issue, i) => (
+                  <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: '0.5rem', padding: '0.4rem 0.5rem', background: 'rgba(239,68,68,0.08)', borderRadius: '4px', border: '1px solid rgba(239,68,68,0.15)' }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap', marginBottom: '0.2rem' }}>
+                        <span style={{ fontSize: '12px', fontWeight: 700, color: '#ef4444', background: 'rgba(239,68,68,0.15)', padding: '0 4px', borderRadius: '3px', textDecoration: 'line-through' }}>
+                          {issue.original}
+                        </span>
+                        {issue.suggestion && (
+                          <>
+                            <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>→</span>
+                            <span style={{ fontSize: '12px', fontWeight: 700, color: '#4ade80', background: 'rgba(74,222,128,0.12)', padding: '0 4px', borderRadius: '3px' }}>
+                              {issue.suggestion}
+                            </span>
+                          </>
+                        )}
+                        <span style={{ fontSize: '9px', color: 'var(--text-muted)', marginLeft: 'auto' }}>
+                          確信度 {Math.round(issue.confidence * 100)}%
+                        </span>
+                      </div>
+                      <div style={{ fontSize: '10px', color: 'var(--text-muted)' }}>{issue.message}</div>
+                    </div>
+                    <button
+                      onClick={() => setDismissedIssues(prev => new Set([...prev, issue.original]))}
+                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: '13px', padding: '0 2px', lineHeight: 1, flexShrink: 0, opacity: 0.6 }}
+                      title="無視"
+                    >×</button>
+                  </div>
+                ))}
+            </div>
+          </div>
+        )}
+
+        {/* 自動検出コンテキストバッジ */}
+        {autoDetectedContext && !isProofreading && (
+          <div style={{ marginBottom: '0.4rem', fontSize: '10px', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+            <span style={{ color: '#818cf8', fontWeight: 700, fontSize: '9px' }}>✦ 自動検出:</span>
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{autoDetectedContext}</span>
           </div>
         )}
 

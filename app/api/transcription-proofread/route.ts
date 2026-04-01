@@ -29,115 +29,192 @@ function buildPrompt(text: string, language: 'ja' | 'en', globalNouns: GlobalNou
       : '（なし）'
 
   const contextSection = context?.trim()
-    ? `\n## 分析コンテキスト（音声の背景情報）\n${context.trim()}\n`
+    ? `\n## 分析コンテキスト（音声の背景情報 — 精度向上のために活用せよ）\n${context.trim()}\n`
     : ''
 
   if (language === 'ja') {
-    return `あなたは音声書き起こしテキストの固有名詞検出・校正エキスパートです。
+    return `あなたは音声書き起こしテキストの校正・固有名詞検出エキスパートです。
+以下の書き起こしテキストに対して、3つのタスクを同時に実行してください。
 ${contextSection}
-## 既知の固有名詞リスト
+## 既知の固有名詞リスト（isNew判定に使用）
 ${nounList}
 
 ## 書き起こしテキスト
 ${text}
 
-## タスク：固有名詞のみを抽出してください
+---
+
+## タスク1: コンテキスト自動検出
+
+テキスト全体を読み、「何についての音声か」を50〜100文字で簡潔に記述せよ。
+例: "映画監督インタビュー。低予算ホラー映画の興行収入・制作手法について話している。"
+例: "IT企業の会議。新製品ロードマップとエンジニアリング体制について議論している。"
+
+---
+
+## タスク2: 音声認識の誤認識を検出・修正
+
+### 検出対象（以下のパターンに限る）
+
+1. **固有名詞の音韻崩壊**: 映画タイトル・人名・作品名・製品名が音声上で崩れたもの
+   - 例: "カミトミ" → "カメ止め（カメラを止めるな！）" ← 映画タイトルの崩れ
+   - 例: "マトリクス" → "マトリックス" ← 正式表記への修正
+   - 例: "ブリーウィッチ" → "ブレア・ウィッチ" ← 映画タイトルの崩れ
+
+2. **同音異義語（文脈上で明らかに誤り）**
+   - 例: テック系の話で「会社の核心」→「会社の革新」
+
+3. **外来語・固有名詞の片仮名誤り**
+   - 例: "アクティビリティ" → "アクティビティ"
+
+### 検出しないもの（以下は返すな）
+
+- フィラー語（「えーと」「あのー」「なんか」「そういう」）
+- 文法・表現が気になるだけで意味が通じるもの
+- 確信度が 0.65 未満のもの
+- テキスト中に存在しない語（必ず original はテキスト内の語）
+
+### 重要ルール
+
+- **originalはテキスト中に完全一致で存在する語句のみ**
+- **確信度 0.65 未満は返すな**（false positive を防ぐ）
+- コンテキスト（タスク1で検出した内容）を最大限活用して推定精度を上げよ
+
+---
+
+## タスク3: 固有名詞の検出と正規化
 
 ### 抽出対象（固有名詞 = 世界に唯一存在する特定の名前）
 - **person**: 実在の人名・キャラクター名（例: 浅尾、スピルバーグ、クエンティン・タランティーノ）
-- **place**: 実在の地名・施設名（例: 渋谷、アメリカ、六本木ヒルズ）
-- **organization**: 実在の会社名・団体名・ブランド名（例: Apple、NHK、4S）
-- **work**: 実在の作品タイトル（例: パラノーマル・アクティビティ、スター・ウォーズ）
-- **technical**: 登録商標・固有の製品/サービス名（例: iPhone、WhisperX、ChatGPT、YouTube）
+- **place**: 実在の地名・施設名（例: 渋谷、ハリウッド）
+- **organization**: 実在の会社名・団体名・ブランド名（例: Apple、NHK）
+- **work**: 実在の作品タイトル（例: パラノーマル・アクティビティ、カメラを止めるな！）
+- **technical**: 登録商標・固有の製品/サービス名（例: iPhone、YouTube、ChatGPT）
 
-### 抽出しないもの（一般名詞・業界用語・概念は除外）
-- 職業・役職（映像制作者、カメラマン、プロデューサー）
-- 一般的な業種・業界語（プロダクション、制作会社、映画業界）
-- 概念・カテゴリ（長編映画、低予算映画、ドキュメンタリー）
-- 一般動詞・形容詞・副詞
-- 曖昧でどの固有名詞か特定できないもの
+### 抽出しないもの（一般名詞は除外）
+- 職業・役職（映像制作者、監督、プロデューサー）
+- 一般的な業種・業界語（プロダクション、制作会社）
+- 概念・カテゴリ（長編映画、低予算映画）
 
-### 重要：正式名称の使用
-- **termフィールドには必ず正式・標準的な表記を使用せよ**。音声認識の誤りや全大文字を修正すること
-  - 例: "YOUTUBE" → "YouTube"、"IPHONE" → "iPhone"、"ぐーぐる" → "Google"
-  - 映画タイトルは正式な日本語公開タイトル（例: "スパイダーマン", "キル・ビル"）
-  - 人名は一般的に認知されている正式名称（例: "タランティーノ" → "クエンティン・タランティーノ"、略称でよければ"タランティーノ"）
-  - ブランド・サービス名は登録商標の正式大文字小文字（YouTube, iPhone, ZOOM など）
-- 音声テキストに出現している語形を termとせず、あなたの知識に基づいて正式名称を判断せよ
-- **ただし termに対応する語は必ずテキスト中に（部分一致でも）存在すること。テキストに全く登場しない固有名詞は返すな**
+### 正規化ルール（termフィールド）
 
-### その他の重要ルール
+- 正式・標準的な表記を使用せよ
+  - "youtube" → "YouTube"、"iphone" → "iPhone"、"zoom" → "Zoom"
+  - 映画タイトルは正式な日本語公開タイトル
+  - ブランド・サービス名は登録商標の正式表記
+- **termに対応する語は必ずテキスト中に（部分一致・case-insensitiveでも）存在すること**
 - 同じ語が複数回出ても1件として返す
-- 確信度(confidence)は「これは実在する固有名詞である」という確信度（0.0〜1.0）
-- 既知リストに存在するものは isNew: false、ないものは isNew: true
-- **タイムコード・タイムスタンプ（00:00:00,000 --> 00:00:02,000 形式）は入力テキストに含まれないが、含まれていても一切出力に含めるな**
-- **入力テキストそのものを変更・修正・要約するな。固有名詞リストのみを返せ**
+
+---
 
 ## 出力形式（JSONのみ、コードブロックなし）
 
 {
-  "issues": [],
+  "detectedContext": "自動検出したコンテキスト（50〜100文字）",
+  "issues": [
+    {
+      "original": "テキスト中の誤認識語（完全一致）",
+      "type": "misrecognition" | "homophone" | "properNoun" | "context",
+      "severity": "error" | "warning",
+      "message": "なぜ誤りと判定したかの説明（日本語）",
+      "suggestion": "修正候補",
+      "confidence": 0.65から1.0の数値
+    }
+  ],
   "detectedNouns": [
     {
       "term": "正式名称の固有名詞",
       "reading": "ふりがな（省略可）",
       "category": "person" | "place" | "organization" | "work" | "technical",
-      "context": "前後の文脈（30文字程度、テキスト中の実際の表記）",
-      "confidence": 0.0から1.0の数値,
+      "context": "前後の文脈（30文字程度）",
+      "confidence": 0.5から1.0の数値,
       "isNew": true | false
     }
   ]
 }`
   } else {
-    return `You are an expert at detecting and verifying proper nouns in speech transcription text.
+    return `You are an expert at proofreading and detecting proper nouns in speech transcription text.
+Perform all 3 tasks simultaneously for the transcription below.
 ${contextSection}
-## Known Proper Nouns (already registered)
+## Known Proper Nouns (for isNew determination)
 ${nounList}
 
 ## Transcription Text
 ${text}
 
-## Task: Extract proper nouns ONLY
+---
 
-### What to extract (proper nouns = names that uniquely identify a specific real-world entity)
-- **person**: Real person names or character names (e.g., Spielberg, Quentin Tarantino)
-- **place**: Real place names, facility names (e.g., Tokyo, Hollywood, Sundance)
-- **organization**: Real company, group, or brand names (e.g., Apple, Netflix, 4S)
-- **work**: Real titles of films, books, shows (e.g., Star Wars, Paranormal Activity)
-- **technical**: Registered trademarks, specific product/service names (e.g., iPhone, WhisperX, ChatGPT, YouTube)
+## Task 1: Auto-detect Context
 
-### What NOT to extract (common nouns, industry terms, concepts — exclude these)
-- Job titles and roles (director, cinematographer, producer, crew)
-- General industry terms (production company, film industry, low-budget)
-- Concepts and categories (feature film, documentary, indie film)
-- Generic verbs, adjectives, adverbs
-- Anything ambiguous that cannot be identified as a specific real entity
+Read the full text and describe in 1-2 sentences what this audio is about.
+Example: "Film director interview. Discussing low-budget horror film production and box office performance."
 
-### Important: Use canonical names
-- **term field MUST use the official/standard spelling** based on your training knowledge
-  - e.g., "YOUTUBE" → "YouTube", "IPHONE" → "iPhone"
-  - Movie titles in their official English title
-  - Brand/service names in their registered trademark casing (YouTube, iPhone, ZOOM, etc.)
-- Do NOT use the transcription's surface form if it differs from the canonical spelling
-- **The term must correspond to a word actually present in the text (at least partial match)**. Do not hallucinate proper nouns not in the text.
+---
 
-### Other rules
-- Return each unique term only once even if it appears multiple times
-- confidence = how certain you are this is a real, specific proper noun (0.0–1.0)
-- isNew: false if in the known list, true if not
-- **Do NOT include timecodes or timestamps in output. Do NOT modify, correct, or summarize the input text. Return only the proper noun list.**
+## Task 2: Detect and Correct Misrecognitions
+
+### What to detect (these patterns only)
+
+1. **Garbled proper nouns**: Film/product/person names mangled by speech recognition
+   - e.g. "paranormal activity" correctly recognized; "blair witch" garbled to "blair witch project" ← already correct
+   - e.g. "matix" → "The Matrix" ← garbled film title
+   - e.g. "apol" → "Apple" ← brand name garbled
+
+2. **Homophones that are clearly wrong in context**
+
+3. **Foreign name transcription errors**
+
+### Do NOT return
+
+- Filler words (uh, um, like, you know)
+- Style issues that don't affect meaning
+- Anything with confidence < 0.65
+- Words not present verbatim in the text
+
+### Rules
+
+- **original must be an exact substring of the transcription text**
+- **confidence < 0.65: do not return** (prevent false positives)
+- Use the auto-detected context (Task 1) to improve accuracy
+
+---
+
+## Task 3: Detect and Normalize Proper Nouns
+
+### What to extract
+- **person**: Real person/character names (e.g., Spielberg, Tarantino)
+- **place**: Real place names (e.g., Tokyo, Hollywood)
+- **organization**: Real company/brand names (e.g., Apple, Netflix)
+- **work**: Real titles of films/books/shows (e.g., Star Wars, Paranormal Activity)
+- **technical**: Registered trademarks, specific product/service names (e.g., iPhone, YouTube)
+
+### Normalization
+- Use official canonical spelling: "YOUTUBE" → "YouTube", "iphone" → "iPhone"
+- **term must correspond to a word in the text (case-insensitive partial match OK)**
+
+---
 
 ## Output Format (JSON only, no code blocks)
 
 {
-  "issues": [],
+  "detectedContext": "auto-detected context (1-2 sentences)",
+  "issues": [
+    {
+      "original": "exact substring from text",
+      "type": "misrecognition" | "homophone" | "properNoun" | "context",
+      "severity": "error" | "warning",
+      "message": "why this is likely a misrecognition",
+      "suggestion": "corrected form",
+      "confidence": number 0.65 to 1.0
+    }
+  ],
   "detectedNouns": [
     {
       "term": "canonical proper noun name",
       "reading": "pronunciation (optional)",
       "category": "person" | "place" | "organization" | "work" | "technical",
-      "context": "surrounding context from text (~30 chars)",
-      "confidence": number between 0.0 and 1.0,
+      "context": "surrounding context (~30 chars)",
+      "confidence": number 0.5 to 1.0,
       "isNew": true | false
     }
   ]
@@ -148,7 +225,7 @@ ${text}
 const VALID_CATEGORIES: ProperNounCategory[] = [
   'person', 'place', 'organization', 'work', 'technical', 'other',
 ]
-const VALID_ISSUE_TYPES = ['homophone', 'properNoun', 'filler', 'context', 'punctuation']
+const VALID_ISSUE_TYPES = ['misrecognition', 'homophone', 'properNoun', 'filler', 'context', 'punctuation']
 const VALID_SEVERITIES = ['error', 'warning', 'info']
 
 export async function POST(request: NextRequest) {
@@ -167,7 +244,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: true, issues: [], detectedNouns: [] })
     }
 
-    const actualModel = model || 'gemini-3-flash-preview'
+    const actualModel = model || 'gemini-2.5-flash'
     const genAI = new GoogleGenerativeAI(apiKey)
     const geminiModel = genAI.getGenerativeModel({ model: actualModel })
 
@@ -185,9 +262,14 @@ export async function POST(request: NextRequest) {
 
     let issues: TranscriptionProofreadIssue[] = []
     let detectedNouns: DetectedNoun[] = []
+    let detectedContext: string | undefined
 
     try {
       const parsed = JSON.parse(rawText)
+
+      if (typeof parsed.detectedContext === 'string' && parsed.detectedContext.trim()) {
+        detectedContext = parsed.detectedContext.trim()
+      }
 
       if (Array.isArray(parsed.issues)) {
         issues = parsed.issues.filter(
@@ -196,7 +278,8 @@ export async function POST(request: NextRequest) {
             VALID_ISSUE_TYPES.includes(item.type) &&
             VALID_SEVERITIES.includes(item.severity) &&
             typeof item.message === 'string' &&
-            typeof item.confidence === 'number'
+            typeof item.confidence === 'number' &&
+            item.confidence >= 0.65
         )
       }
 
@@ -222,7 +305,7 @@ export async function POST(request: NextRequest) {
       console.error('[transcription-proofread] JSON parse error, raw:', rawText)
     }
 
-    return NextResponse.json({ success: true, issues, detectedNouns })
+    return NextResponse.json({ success: true, detectedContext, issues, detectedNouns })
   } catch (error: any) {
     console.error('[transcription-proofread] Error:', error)
     return NextResponse.json(

@@ -386,8 +386,9 @@ export interface SubtitleProofreadResult {
 // ============================================
 
 export type TranscriptionIssueType =
+  | 'misrecognition' // 音声認識の誤認識（カミトミ→カメ止め 等）
   | 'homophone'      // 同音異義語（行く/逝く）
-  | 'properNoun'     // 固有名詞の誤認識
+  | 'properNoun'     // 固有名詞の表記誤り
   | 'filler'         // フィラー（えーと、あのー）
   | 'context'        // 文脈的に不自然
   | 'punctuation';   // 句読点の誤り
@@ -412,6 +413,7 @@ export interface DetectedNoun {
 
 export interface TranscriptionProofreadResult {
   success: boolean;
+  detectedContext?: string;  // Geminiが自動検出したコンテキスト（次回に活用）
   issues: TranscriptionProofreadIssue[];
   detectedNouns: DetectedNoun[];
   error?: string;

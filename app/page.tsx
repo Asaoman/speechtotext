@@ -118,8 +118,11 @@ export default function Home() {
   const [movieProjectIdToLoad, setMovieProjectIdToLoad] = useState<string | null>(null)
   const [transcriptionContext, setTranscriptionContext] = useState('')
   const [showContextInput, setShowContextInput] = useState(false)
+  const [autoDetectedContext, setAutoDetectedContext] = useState('')
   const transcriptionContextRef = useRef('')
+  const autoDetectedContextRef = useRef('')
   useEffect(() => { transcriptionContextRef.current = transcriptionContext }, [transcriptionContext])
+  useEffect(() => { autoDetectedContextRef.current = autoDetectedContext }, [autoDetectedContext])
 
   const handleSaveApiKeys = (keys: ApiKeys) => {
     setApiKeys(keys)
@@ -163,11 +166,16 @@ export default function Home() {
           globalNouns: approvedNouns.map((n) => ({ term: n.term, reading: n.reading, category: n.category })),
           apiKey: apiKeys.gemini,
           model: aiPreferences.geminiModel || 'gemini-3-flash-preview',
-          context: transcriptionContextRef.current || undefined,
+          // 手動コンテキストを優先、なければ前回の自動検出を使用
+          context: transcriptionContextRef.current || autoDetectedContextRef.current || undefined,
         }),
       })
       const data: TranscriptionProofreadResult & { error?: string } = await res.json()
       if (data.success) {
+        // 自動検出コンテキストを保存（次回呼び出しで精度向上に使う）
+        if (data.detectedContext && !transcriptionContextRef.current) {
+          setAutoDetectedContext(data.detectedContext)
+        }
         setTranscriptionProofreadResult(data)
         setProofreadCache(text, data)
       } else {
@@ -645,6 +653,7 @@ export default function Home() {
                     highlightTerms={highlightNouns}
                     onNounClickedInText={handleNounApproved}
                     screeningModel={aiPreferences.geminiModel || 'gemini-3-flash-preview'}
+                    autoDetectedContext={autoDetectedContext}
                   />
                 </div>
               )}
