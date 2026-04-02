@@ -1,9 +1,9 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
-import { 
-  MovieSubtitleEntry, 
-  Character, 
+import {
+  MovieSubtitleEntry,
+  Character,
   MovieSettings as MovieSettingsType,
   AIPreferences,
   ApiKeys,
@@ -12,7 +12,8 @@ import {
   ExtractedProperNoun,
   SubtitlePlatform,
   LineBreakPatternType,
-  SegmentSplitPatternType
+  SegmentSplitPatternType,
+  SubtitleProofreadIssue
 } from '@/lib/types'
 import { downloadFile, formatTimestampSRT, formatTimestampVTT } from '@/lib/utils'
 import { 
@@ -153,6 +154,10 @@ export default function MovieSubtitleTab({ apiKeys, aiPreferences, loadProjectId
 
   // タイミング検証
   const [timingValidation, setTimingValidation] = useState<SubtitleTimingValidation | null>(null)
+
+  // 字幕校正
+  const [proofreadIssues, setProofreadIssues] = useState<SubtitleProofreadIssue[]>([])
+  const [isProofreading, setIsProofreading] = useState(false)
 
   // 固有名詞
   const [properNouns, setProperNouns] = useState<ExtractedProperNoun[]>([])
@@ -307,7 +312,7 @@ export default function MovieSubtitleTab({ apiKeys, aiPreferences, loadProjectId
             firstPerson: char.firstPerson || '私',
             secondPerson: char.secondPerson || 'あなた',
             sentenceEndings: char.sentenceEndings ? JSON.stringify(char.sentenceEndings) : null,
-            characterTraits: char.characterTraits || char.description || null,
+            characterTraits: char.characterTraits || null,
             sampleDialogues: char.sampleDialogues ? JSON.stringify(char.sampleDialogues) : null,
             speakerId: char.speakerId || null,
             color: char.color || null,
@@ -896,7 +901,7 @@ export default function MovieSubtitleTab({ apiKeys, aiPreferences, loadProjectId
           text,
           apiKey: apiKeys.gemini,
           geminiModelScript: aiPreferences.geminiModelScript || 'gemini-2.5-pro',
-          geminiModelLight: aiPreferences.geminiModelLight || 'gemini-2.0-flash-exp'
+          geminiModelLight: aiPreferences.geminiModelLight || 'gemini-2.5-flash-lite'
         })
       })
 
@@ -991,6 +996,35 @@ export default function MovieSubtitleTab({ apiKeys, aiPreferences, loadProjectId
         setAnalysisStep('')
         setAnalysisProgress(0)
       }, 1000)
+    }
+  }
+
+  // 字幕校正
+  const handleSubtitleProofread = async () => {
+    if (!apiKeys.gemini || subtitles.length === 0) return
+    setIsProofreading(true)
+    setProofreadIssues([])
+    try {
+      const language = movieSettings?.originalLanguage === 'en' ? 'en' : 'ja'
+      const res = await fetch('/api/subtitles/proofread', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          subtitles,
+          language,
+          properNouns,
+          apiKey: apiKeys.gemini,
+          model: aiPreferences.geminiModel || 'gemini-3-flash-preview',
+        }),
+      })
+      const data = await res.json()
+      if (data.success) {
+        setProofreadIssues(data.issues || [])
+      }
+    } catch (e) {
+      console.error('[proofread]', e)
+    } finally {
+      setIsProofreading(false)
     }
   }
 
@@ -1649,6 +1683,33 @@ export default function MovieSubtitleTab({ apiKeys, aiPreferences, loadProjectId
                 settings={movieSettings}
                 onSettingsChange={setMovieSettings}
               />
+
+              {/* 固有名詞管理 */}
+              {selectedProjectId && (
+                <div style={{ marginTop: '1rem' }}>
+                  <ProperNounExtractor
+                    projectId={selectedProjectId}
+                    apiKeys={apiKeys}
+                    aiPreferences={aiPreferences}
+                    existingNouns={properNouns}
+                    scriptText={scriptText}
+                    subtitleText={subtitles.length > 0 ? subtitles.map(s => s.text).join('\n') : undefined}
+                    onNounsExtracted={(newNouns) => {
+                      setProperNouns(prev => {
+                        const existingIds = new Set(prev.map(n => n.id))
+                        const merged = [...prev, ...newNouns.filter(n => !existingIds.has(n.id))]
+                        return merged
+                      })
+                    }}
+                    onNounApproved={(noun) => {
+                      setProperNouns(prev => prev.map(n => n.id === noun.id ? noun : n))
+                    }}
+                    onNounRemoved={(nounId) => {
+                      setProperNouns(prev => prev.filter(n => n.id !== nounId))
+                    }}
+                  />
+                </div>
+              )}
             </>
           )}
 
@@ -1739,6 +1800,56 @@ export default function MovieSubtitleTab({ apiKeys, aiPreferences, loadProjectId
                   </p>
                 </div>
               )}
+
+              {/* 字幕校正 */}
+              <div style={{ marginTop: '1.5rem', paddingTop: '1rem', borderTop: '1px solid var(--border)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.75rem' }}>
+                  <h4 style={{ fontSize: '12px', fontWeight: 600 }}>字幕校正</h4>
+                  <button
+                    onClick={handleSubtitleProofread}
+                    disabled={isProofreading || subtitles.length === 0 || !apiKeys.gemini}
+                    style={{
+                      padding: '0.375rem 0.75rem',
+                      fontSize: '11px',
+                      backgroundColor: isProofreading ? 'var(--bg-subtle)' : 'var(--accent)',
+                      color: isProofreading ? 'var(--text-muted)' : 'white',
+                      border: 'none',
+                      borderRadius: '4px',
+                      cursor: isProofreading || subtitles.length === 0 || !apiKeys.gemini ? 'not-allowed' : 'pointer',
+                      fontWeight: 600,
+                    }}
+                  >
+                    {isProofreading ? '校正中...' : '字幕を校正する'}
+                  </button>
+                </div>
+                {!apiKeys.gemini && (
+                  <p style={{ fontSize: '10px', color: 'var(--text-muted)' }}>Gemini APIキーが必要です</p>
+                )}
+                {proofreadIssues.length > 0 && (
+                  <div style={{ padding: '0.75rem', backgroundColor: 'rgba(245, 158, 11, 0.08)', border: '1px solid rgba(245, 158, 11, 0.3)', borderRadius: '6px' }}>
+                    <div style={{ fontSize: '11px', fontWeight: 600, marginBottom: '0.5rem', color: '#f59e0b' }}>
+                      校正結果: {proofreadIssues.length}件の問題
+                    </div>
+                    <div style={{ display: 'flex', gap: '0.75rem', fontSize: '10px', color: 'var(--text-muted)', flexWrap: 'wrap' }}>
+                      {proofreadIssues.filter(i => i.type === 'linebreak').length > 0 && (
+                        <span>↵ 改行: {proofreadIssues.filter(i => i.type === 'linebreak').length}件</span>
+                      )}
+                      {proofreadIssues.filter(i => i.type === 'cutpoint').length > 0 && (
+                        <span>✂ カット点: {proofreadIssues.filter(i => i.type === 'cutpoint').length}件</span>
+                      )}
+                      {proofreadIssues.filter(i => i.type === 'properNoun').length > 0 && (
+                        <span>📝 固有名詞: {proofreadIssues.filter(i => i.type === 'properNoun').length}件</span>
+                      )}
+                    </div>
+                    <p style={{ fontSize: '9px', color: 'var(--text-muted)', marginTop: '0.375rem' }}>
+                      翻訳ワークスペースのセリフ一覧でアイコンをご確認ください
+                    </p>
+                  </div>
+                )}
+                {proofreadIssues.length === 0 && !isProofreading && subtitles.length > 0 && proofreadIssues !== undefined && (
+                  <p style={{ fontSize: '10px', color: 'var(--text-muted)' }}>「字幕を校正する」で改行・カット点・固有名詞を一括検証します</p>
+                )}
+              </div>
             </div>
           )}
 
@@ -1778,26 +1889,35 @@ export default function MovieSubtitleTab({ apiKeys, aiPreferences, loadProjectId
                         const text = sub.translatedText || sub.text
                         const cps = text.length / duration
                         const hasWarning = duration < currentPreset.minDuration || duration > currentPreset.maxDuration || cps > currentPreset.maxCPS
-                        
+                        const subIssues = proofreadIssues.filter(i => i.subtitleIndex === sub.index)
+                        const hasLinebreak = subIssues.some(i => i.type === 'linebreak')
+                        const hasCutpoint = subIssues.some(i => i.type === 'cutpoint')
+                        const hasNounIssue = subIssues.some(i => i.type === 'properNoun')
+                        const issueTooltip = subIssues.map(i => `[${i.type}] ${i.message}`).join('\n')
+
                         return (
                           <div
                             key={sub.index}
                             onClick={() => setSelectedSubtitleIndex(sub.index)}
+                            title={issueTooltip || undefined}
                             style={{
                               padding: '0.5rem',
                               marginBottom: '0.25rem',
-                              backgroundColor: selectedSubtitleIndex === sub.index ? 'var(--accent)' : 'var(--bg-subtle)',
+                              backgroundColor: selectedSubtitleIndex === sub.index ? 'var(--accent)' : subIssues.some(i => i.severity === 'error') ? 'rgba(239,68,68,0.07)' : subIssues.length > 0 ? 'rgba(245,158,11,0.07)' : 'var(--bg-subtle)',
                               color: selectedSubtitleIndex === sub.index ? 'white' : 'var(--text)',
                               borderRadius: '4px',
                               fontSize: '10px',
                               cursor: 'pointer',
-                              border: selectedSubtitleIndex === sub.index ? '2px solid var(--accent)' : '1px solid var(--border)'
+                              border: selectedSubtitleIndex === sub.index ? '2px solid var(--accent)' : subIssues.some(i => i.severity === 'error') ? '1px solid rgba(239,68,68,0.4)' : subIssues.length > 0 ? '1px solid rgba(245,158,11,0.4)' : '1px solid var(--border)'
                             }}
                           >
                             <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', marginBottom: '0.25rem' }}>
                               <span style={{ fontFamily: 'monospace' }}>#{sub.index}</span>
                               <span>{formatTimestampSRT(sub.startTime)}</span>
                               {hasWarning && <span style={{ fontSize: '9px' }}>⚠️</span>}
+                              {hasLinebreak && <span style={{ fontSize: '9px' }} title="改行位置に問題があります">↵</span>}
+                              {hasCutpoint && <span style={{ fontSize: '9px' }} title="カット点に問題があります">✂</span>}
+                              {hasNounIssue && <span style={{ fontSize: '9px' }} title="固有名詞に問題があります">📝</span>}
                               {sub.characterName && (
                                 <span style={{ padding: '0.125rem 0.25rem', fontSize: '9px', backgroundColor: selectedSubtitleIndex === sub.index ? 'rgba(255,255,255,0.3)' : 'var(--accent)', color: selectedSubtitleIndex === sub.index ? 'white' : 'white', borderRadius: '3px' }}>
                                   {sub.characterName}
@@ -1807,6 +1927,14 @@ export default function MovieSubtitleTab({ apiKeys, aiPreferences, loadProjectId
                             <div style={{ fontSize: '11px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                               {text}
                             </div>
+                            {subIssues.length > 0 && (
+                              <div style={{ marginTop: '0.25rem', fontSize: '9px', color: selectedSubtitleIndex === sub.index ? 'rgba(255,255,255,0.8)' : 'var(--text-muted)', lineHeight: 1.4 }}>
+                                {subIssues.slice(0, 2).map((issue, i) => (
+                                  <div key={i}>{issue.message}{issue.suggestion ? ` → ${issue.suggestion.replace(/\n/g, ' / ')}` : ''}</div>
+                                ))}
+                                {subIssues.length > 2 && <div>他{subIssues.length - 2}件...</div>}
+                              </div>
+                            )}
                           </div>
                         )
                       })

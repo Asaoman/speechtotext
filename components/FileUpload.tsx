@@ -1,13 +1,15 @@
 'use client'
 
 import { useState, useRef } from 'react'
-import { ApiKeys, TranscriptionResult } from '@/lib/types'
+import { ApiKeys, TranscriptionResult, SpeechProject } from '@/lib/types'
 
 interface FileUploadProps {
   apiKeys: ApiKeys
-  onTranscriptionComplete: (result: TranscriptionResult, fileName: string, service: string) => void
+  onTranscriptionComplete: (result: TranscriptionResult, fileName: string, service: string, projectId?: string) => void
   isTranscribing: boolean
   setIsTranscribing: (value: boolean) => void
+  speechProjects?: SpeechProject[]
+  defaultProjectId?: string | null
 }
 
 interface QueuedFile {
@@ -25,10 +27,13 @@ export default function FileUpload({
   onTranscriptionComplete,
   isTranscribing,
   setIsTranscribing,
+  speechProjects = [],
+  defaultProjectId = null,
 }: FileUploadProps) {
   const [queue, setQueue] = useState<QueuedFile[]>([])
-  const [service, setService] = useState<'openai' | 'elevenlabs' | 'whisperx'>('elevenlabs')
-  const [enableDiarization, setEnableDiarization] = useState<boolean>(false)
+  const service = 'elevenlabs' as const
+  const enableDiarization = true
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(defaultProjectId)
   const [numSpeakers, setNumSpeakers] = useState<string>('')
   const [error, setError] = useState<string>('')
   const [isDragging, setIsDragging] = useState<boolean>(false)
@@ -85,7 +90,7 @@ export default function FileUpload({
   }
 
   const transcribeFile = async (file: File, idx: number): Promise<void> => {
-    const apiKey = service === 'openai' ? apiKeys.openai : apiKeys.elevenlabs
+    const apiKey = apiKeys.elevenlabs
 
     setCurrentFileIndex(idx)
     setProgress(0)
@@ -102,16 +107,12 @@ export default function FileUpload({
       if (n >= 2 && n <= 32) formData.append('numSpeakers', numSpeakers)
     }
 
-    if (service !== 'whisperx' && apiKey) {
+    if (apiKey) {
       formData.append('apiKey', apiKey)
     }
 
     setProgress(20)
-    setProgressStep(
-      service === 'whisperx' ? 'WhisperXで処理中...' :
-      service === 'openai' ? 'OpenAI Whisper APIで処理中...' :
-      'ElevenLabs Scribe APIで処理中...'
-    )
+    setProgressStep('ElevenLabs Scribe APIで処理中...')
 
     const response = await fetch('/api/transcribe', { method: 'POST', body: formData })
 
@@ -139,7 +140,7 @@ export default function FileUpload({
     setProgressStep('完了')
 
     setQueue((prev) => prev.map((q, i) => i === idx ? { ...q, status: 'done' } : q))
-    onTranscriptionComplete(result, file.name, service)
+    onTranscriptionComplete(result, file.name, service, selectedProjectId ?? undefined)
   }
 
   const handleTranscribeAll = async () => {
@@ -149,12 +150,9 @@ export default function FileUpload({
       return
     }
 
-    if (service !== 'whisperx') {
-      const apiKey = service === 'openai' ? apiKeys.openai : apiKeys.elevenlabs
-      if (!apiKey) {
-        setError(`${service === 'openai' ? 'OpenAI' : 'ElevenLabs'} APIキーが設定されていません`)
-        return
-      }
+    if (!apiKeys.elevenlabs) {
+      setError('ElevenLabs APIキーが設定されていません')
+      return
     }
 
     setIsTranscribing(true)
@@ -183,50 +181,64 @@ export default function FileUpload({
     }, 1000)
   }
 
-  const canTranscribe = service === 'whisperx' ? true : (service === 'openai' ? !!apiKeys.openai : !!apiKeys.elevenlabs)
+  const canTranscribe = !!apiKeys.elevenlabs
   const pendingCount = queue.filter((q) => q.status === 'pending').length
   const doneCount = queue.filter((q) => q.status === 'done').length
 
   return (
     <div className="card" style={{ padding: '1rem' }}>
-      {/* Service selector */}
-      <div style={{ marginBottom: '1rem' }}>
-        <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.5rem' }}>
-          <button onClick={() => setService('whisperx')} className={service === 'whisperx' ? 'btn-primary' : 'btn'} style={{ flex: 1, fontSize: '12px', padding: '0.5rem' }}>WhisperX</button>
-          <button onClick={() => setService('openai')} className={service === 'openai' ? 'btn-primary' : 'btn'} style={{ flex: 1, fontSize: '12px', padding: '0.5rem' }}>OpenAI</button>
-          <button onClick={() => setService('elevenlabs')} className={service === 'elevenlabs' ? 'btn-primary' : 'btn'} style={{ flex: 1, fontSize: '12px', padding: '0.5rem' }}>ElevenLabs</button>
+      {/* プロジェクト選択 */}
+      {speechProjects.length > 0 && (
+        <div style={{ marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+          <span style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-muted)', flexShrink: 0 }}>保存先:</span>
+          <button
+            onClick={() => setSelectedProjectId(null)}
+            style={{
+              padding: '0.25rem 0.6rem', fontSize: '11px', borderRadius: '4px', cursor: 'pointer', border: '1px solid',
+              borderColor: selectedProjectId === null ? 'var(--accent)' : 'var(--border)',
+              background: selectedProjectId === null ? 'rgba(var(--accent-rgb, 250,204,21),0.15)' : 'var(--bg)',
+              color: selectedProjectId === null ? 'var(--accent)' : 'var(--text-muted)', fontWeight: 600,
+            }}
+          >
+            セッション
+          </button>
+          {speechProjects.map((p) => (
+            <button
+              key={p.id}
+              onClick={() => setSelectedProjectId(p.id)}
+              style={{
+                padding: '0.25rem 0.6rem', fontSize: '11px', borderRadius: '4px', cursor: 'pointer', border: '1px solid',
+                borderColor: selectedProjectId === p.id ? 'var(--accent)' : 'var(--border)',
+                background: selectedProjectId === p.id ? 'rgba(var(--accent-rgb, 250,204,21),0.15)' : 'var(--bg)',
+                color: selectedProjectId === p.id ? 'var(--accent)' : 'var(--text)', fontWeight: selectedProjectId === p.id ? 700 : 400,
+              }}
+            >
+              📁 {p.name}
+            </button>
+          ))}
         </div>
-        <div style={{ fontSize: '11px', color: 'var(--text-muted)', textAlign: 'center' }}>
-          {service === 'whisperx' && 'ローカル処理・APIキー不要'}
-          {service === 'openai' && 'Whisper API'}
-          {service === 'elevenlabs' && '話者識別対応'}
-        </div>
-      </div>
+      )}
 
-      {/* Diarization */}
-      <div style={{ marginBottom: '1rem', padding: '0.75rem', backgroundColor: 'var(--bg-subtle)', borderRadius: '8px' }}>
-        <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: service === 'openai' ? 'not-allowed' : 'pointer', opacity: service === 'openai' ? 0.5 : 1 }}>
-          <input type="checkbox" checked={enableDiarization} onChange={(e) => setEnableDiarization(e.target.checked)} disabled={service === 'openai'} style={{ width: '16px', height: '16px', cursor: service === 'openai' ? 'not-allowed' : 'pointer' }} />
-          <span style={{ fontSize: '12px', fontWeight: 500 }}>話者分離を有効にする</span>
-        </label>
-        <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '0.25rem', marginLeft: '1.5rem' }}>
-          {service === 'openai' ? 'OpenAI Whisper APIは話者分離に対応していません' : '声質で話者を自動識別（WhisperX・ElevenLabs対応、最大32名まで）'}
-        </div>
-        {enableDiarization && service !== 'openai' && (
-          <div style={{ marginTop: '0.75rem', marginLeft: '1.5rem' }}>
-            <label style={{ display: 'block', fontSize: '11px', fontWeight: 500, marginBottom: '0.25rem' }}>話者数（オプション）</label>
-            <input type="number" min="2" max="32" value={numSpeakers} onChange={(e) => setNumSpeakers(e.target.value)} placeholder="自動検出" className="input" style={{ width: '100px', padding: '0.375rem 0.5rem', fontSize: '12px', backgroundColor: 'var(--card)', border: '1px solid var(--border)', borderRadius: '4px', color: 'var(--text)' }} />
-            <div style={{ fontSize: '10px', color: 'var(--text-muted)', marginTop: '0.25rem' }}>空欄で自動検出、2〜32で指定可能</div>
-          </div>
-        )}
+      {/* 話者数（オプション） */}
+      <div style={{ marginBottom: '1rem', padding: '0.75rem', backgroundColor: 'var(--bg-subtle)', borderRadius: '8px', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+        <span style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text)', whiteSpace: 'nowrap' }}>話者数</span>
+        <input
+          type="number"
+          min="2"
+          max="32"
+          value={numSpeakers}
+          onChange={(e) => setNumSpeakers(e.target.value)}
+          placeholder="自動検出"
+          className="input"
+          style={{ width: '90px', padding: '0.375rem 0.5rem', fontSize: '12px', backgroundColor: 'var(--card)', border: '1px solid var(--border)', borderRadius: '4px', color: 'var(--text)' }}
+        />
+        <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>空欄で自動検出（最大32名）</span>
       </div>
 
       {/* API key warning */}
-      {service !== 'whisperx' && !canTranscribe && (
+      {!canTranscribe && (
         <div className="card" style={{ padding: '0.75rem', marginBottom: '1rem', borderColor: '#fbbf24', backgroundColor: '#fffbeb' }}>
-          <div style={{ fontSize: '12px', color: '#92400e' }}>
-            {service === 'openai' ? 'OpenAI' : 'ElevenLabs'} APIキーが必要です
-          </div>
+          <div style={{ fontSize: '12px', color: '#92400e' }}>ElevenLabs APIキーが必要です（設定から登録してください）</div>
         </div>
       )}
 

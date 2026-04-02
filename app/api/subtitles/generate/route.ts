@@ -41,11 +41,13 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server'
-import { 
-  TranscriptionWord, 
-  SubtitleGenerationSettings, 
-  SubtitleEntry, 
+import { GoogleGenerativeAI } from '@google/generative-ai'
+import {
+  TranscriptionWord,
+  SubtitleGenerationSettings,
+  SubtitleEntry,
   SubtitleGenerationResult,
+  SubtitleValidationResult,
   LanguageTimingConfig,
   FrameRate,
   TimingViolation,
@@ -56,11 +58,11 @@ import {
   SegmentSplitPatternType
 } from '@/lib/types'
 import { formatTimestampSRT, formatTimestampVTT } from '@/lib/utils'
-import { 
-  SUBTITLE_PRESETS, 
-  LINE_BREAK_PATTERNS, 
+import {
+  SUBTITLE_PRESETS,
+  LINE_BREAK_PATTERNS,
   SEGMENT_SPLIT_PATTERNS,
-  getPresetById 
+  getPresetById
 } from '@/lib/subtitlePresets'
 
 export const runtime = 'nodejs'
@@ -614,6 +616,280 @@ function validateSubtitleTiming(
   }
 }
 
+// ============================================
+// Phase 1: AI一括セグメント分割
+// ============================================
+async function aiSegmentText(
+  words: TranscriptionWord[],
+  settings: SubtitleGenerationSettings,
+  geminiApiKey: string
+): Promise<string[] | null> {
+  const fullText = words.map(w => w.word).join(settings.language === 'ja' ? '' : ' ')
+  const maxCharsTotal = settings.maxCharsPerLine * settings.maxLines
+
+  const genAI = new GoogleGenerativeAI(geminiApiKey)
+  const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' })
+
+  const prompt = settings.language === 'ja'
+    ? `以下の書き起こしテキストを字幕用にセグメント分割せよ。
+
+制約:
+- 1セグメントの最大文字数: ${maxCharsTotal}文字
+- 各セグメントは意味的に完結した単位であること
+- 文の途中でセグメントを切らないこと
+
+セグメント分割の優先順位:
+1. 文の完結点（文末表現: 〜た、〜です、〜ます、〜よ、〜ね、〜な）で切る
+2. 接続詞・接続助詞の前で切る（しかし、そして、だから、でも等）
+3. 引用・会話の区切りで切る
+4. 読点の前後で切る（ただし意味のまとまり優先）
+
+絶対禁止:
+- 助詞の直前・直後で切らない（〜は、〜が、〜を、〜に等）
+- 修飾語と被修飾語を分断しない
+- 固有名詞を分断しない
+- 1セグメントが${maxCharsTotal}文字を超えないこと
+
+テキスト:
+${fullText}
+
+出力形式（JSONのみ、コードブロックなし）:
+{"segments": ["セグメント1テキスト", "セグメント2テキスト", ...]}`
+    : `Split the following transcription into subtitle segments.
+
+Constraints:
+- Max chars per segment: ${maxCharsTotal}
+- Each segment must be a semantically complete unit
+- Never split mid-sentence
+
+Priority order for split points:
+1. Sentence boundaries (periods, question marks, exclamation marks)
+2. Before conjunctions (but, and, so, because, however)
+3. After quoted speech
+4. After commas that mark natural pauses
+
+Forbidden:
+- Never split before/after articles (a, an, the) and their nouns
+- Never split between modifier and modified word
+- Never split proper nouns
+- No segment longer than ${maxCharsTotal} chars
+
+Text:
+${fullText}
+
+Output format (JSON only, no code blocks):
+{"segments": ["segment1 text", "segment2 text", ...]}`
+
+  try {
+    const result = await model.generateContent({
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      generationConfig: {
+        temperature: 0.1,
+        responseMimeType: 'application/json',
+      },
+    })
+
+    const rawText = result.response.text().trim()
+    const parsed = JSON.parse(rawText)
+
+    if (!Array.isArray(parsed.segments) || parsed.segments.length === 0) {
+      return null
+    }
+
+    // 検証: maxCharsTotal を超えるセグメントがないか
+    const hasOversized = parsed.segments.some(
+      (s: string) => typeof s === 'string' && s.length > maxCharsTotal * 1.2
+    )
+    if (hasOversized) {
+      console.warn('[Phase1] Oversized segment detected, falling back to rule-based')
+      return null
+    }
+
+    return parsed.segments.filter((s: any) => typeof s === 'string' && s.trim().length > 0)
+  } catch (err) {
+    console.error('[Phase1] AI segmentation failed:', err)
+    return null
+  }
+}
+
+// ============================================
+// Phase 2: タイムスタンプ割当 (CPU処理)
+// ============================================
+function assignTimestamps(
+  segments: string[],
+  words: TranscriptionWord[],
+  language: 'en' | 'ja'
+): SubtitleEntry[] {
+  const subtitles: SubtitleEntry[] = []
+  let wordIdx = 0
+
+  for (let segIdx = 0; segIdx < segments.length; segIdx++) {
+    const segText = segments[segIdx].trim()
+    if (!segText) continue
+
+    // セグメントテキストの正規化（スペース除去で比較）
+    const normalize = (s: string) => s.replace(/\s+/g, '')
+    const normalizedSeg = normalize(segText)
+
+    let accumulated = ''
+    const startWordIdx = wordIdx
+    let endWordIdx = wordIdx
+
+    // words を順に消費してセグメントテキストと一致するまで進める
+    while (wordIdx < words.length) {
+      const w = words[wordIdx]
+      const sep = language === 'ja' ? '' : (accumulated ? ' ' : '')
+      const candidate = accumulated + sep + w.word
+      const normalizedCandidate = normalize(candidate)
+
+      // セグメントテキストの先頭部分とマッチしているか確認
+      if (normalizedSeg.startsWith(normalizedCandidate)) {
+        accumulated = candidate
+        endWordIdx = wordIdx
+        wordIdx++
+
+        // 完全一致
+        if (normalize(accumulated) === normalizedSeg) {
+          break
+        }
+      } else if (normalizedSeg.length <= normalize(accumulated).length) {
+        // 行き過ぎた場合は終了
+        break
+      } else {
+        // 不一致だが進める（fuzzyマッチング）
+        accumulated = candidate
+        endWordIdx = wordIdx
+        wordIdx++
+
+        if (normalize(accumulated).length >= normalizedSeg.length) {
+          break
+        }
+      }
+    }
+
+    if (startWordIdx > endWordIdx && wordIdx > 0) {
+      endWordIdx = wordIdx - 1
+    }
+
+    const startWord = words[startWordIdx]
+    const endWord = words[Math.min(endWordIdx, words.length - 1)]
+
+    if (!startWord) continue
+
+    subtitles.push({
+      index: segIdx + 1,
+      startTime: startWord.start,
+      endTime: endWord ? endWord.end : startWord.end,
+      text: segText,
+      lines: [segText], // Phase 3で上書き
+    })
+  }
+
+  return subtitles
+}
+
+// ============================================
+// Phase 3: バッチ行分割 (1回のAI呼び出し)
+// ============================================
+async function batchOptimizeLineBreaks(
+  subtitles: SubtitleEntry[],
+  settings: SubtitleGenerationSettings
+): Promise<SubtitleEntry[]> {
+  if (!settings.lineBreakApiKey || subtitles.length === 0) {
+    // APIキーなし: フォールバック
+    return subtitles.map(s => ({
+      ...s,
+      lines: fallbackLineBreak(
+        language === 'ja' ? processJapanesePunctuation(s.text) : s.text,
+        settings.maxCharsPerLine,
+        settings.maxLines,
+        settings.language
+      ),
+    }))
+  }
+
+  const language = settings.language
+  const texts = subtitles.map(s => language === 'ja' ? processJapanesePunctuation(s.text) : s.text)
+
+  try {
+    const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000'
+    const response = await fetch(`${baseUrl}/api/subtitles/optimize-line-breaks`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mode: 'batch',
+        texts,
+        maxCharsPerLine: settings.maxCharsPerLine,
+        maxLines: settings.maxLines,
+        language,
+        service: settings.lineBreakService,
+        apiKey: settings.lineBreakApiKey,
+      }),
+    })
+
+    if (!response.ok) {
+      throw new Error(`Batch line-break request failed: ${response.status}`)
+    }
+
+    const data = await response.json()
+
+    if (!Array.isArray(data.results)) {
+      throw new Error('Batch response missing results')
+    }
+
+    // 結果をインデックスでマッピング
+    const resultMap = new Map<number, string[]>()
+    for (const r of data.results) {
+      if (typeof r.index === 'number' && Array.isArray(r.lines)) {
+        resultMap.set(r.index, r.lines)
+      }
+    }
+
+    return subtitles.map((s, i) => ({
+      ...s,
+      lines: resultMap.get(i + 1) || [texts[i]],
+    }))
+  } catch (err) {
+    console.error('[Phase3] Batch line-break failed, using fallback:', err)
+    return subtitles.map((s, i) => ({
+      ...s,
+      lines: fallbackLineBreak(texts[i], settings.maxCharsPerLine, settings.maxLines, language),
+    }))
+  }
+}
+
+// ============================================
+// Phase 5: AI包括検証
+// ============================================
+async function validateSubtitlesWithAI(
+  subtitles: SubtitleEntry[],
+  language: 'en' | 'ja',
+  service: string,
+  apiKey: string
+): Promise<SubtitleValidationResult | null> {
+  try {
+    const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000'
+    const response = await fetch(`${baseUrl}/api/subtitles/validate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ subtitles, language, service, apiKey }),
+    })
+
+    if (!response.ok) return null
+
+    const data = await response.json()
+    if (data.success === false) return null
+
+    return data as SubtitleValidationResult
+  } catch (err) {
+    console.error('[Phase5] AI validation failed:', err)
+    return null
+  }
+}
+
+// 変数参照用（Phase 3のfallback内で使用）
+const language_placeholder = 'ja' as 'en' | 'ja'
+
 // 文脈を考慮した単語グループ化（字幕生成のコアロジック）
 async function groupWordsIntoSubtitles(
   words: TranscriptionWord[],
@@ -995,10 +1271,10 @@ function generateSRTContentWithSpeakers(
 export async function POST(request: NextRequest) {
   try {
     const body: SubtitleGenerationRequest = await request.json()
-    const { 
-      words, 
-      settings, 
-      fps = 24, 
+    const {
+      words,
+      settings,
+      fps = 24,
       enableTimingValidation = true,
       autoFixViolations = true,
       includeSpeakerTags = false,
@@ -1012,17 +1288,55 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    if (!settings.lineBreakApiKey) {
-      console.log('No API key provided, will use fallback line breaking')
+    const fpsVal = fps as FrameRate
+    const lang = settings.language
+
+    console.log(`[subtitle generate] ${words.length} words, lang=${lang}, fps=${fpsVal}`)
+
+    let subtitles: SubtitleEntry[]
+    let phase1Segments = 0
+    let usedAIPipeline = false
+
+    // ============================================================
+    // 3フェーズAIパイプライン (APIキーがある場合)
+    // ============================================================
+    if (settings.lineBreakApiKey) {
+      // Phase 1: AI一括セグメント分割
+      console.log('[Phase1] AI segmentation starting...')
+      const aiSegments = await aiSegmentText(words, settings, settings.lineBreakApiKey)
+
+      if (aiSegments && aiSegments.length > 0) {
+        phase1Segments = aiSegments.length
+        usedAIPipeline = true
+        console.log(`[Phase1] Got ${aiSegments.length} segments`)
+
+        // Phase 2: タイムスタンプ割当
+        console.log('[Phase2] Assigning timestamps...')
+        let rawSubtitles = assignTimestamps(aiSegments, words, lang)
+
+        // Phase 3: バッチ行分割最適化
+        console.log('[Phase3] Batch line-break optimization...')
+        rawSubtitles = await batchOptimizeLineBreaks(rawSubtitles, settings)
+
+        // Phase 4: タイミング調整（既存ロジック）
+        console.log('[Phase4] Adjusting timings...')
+        subtitles = adjustSubtitleTimings(rawSubtitles, lang, fpsVal, autoFixViolations)
+      } else {
+        // Phase 1 失敗 → ルールベースフォールバック
+        console.log('[Phase1] Falling back to rule-based segmentation')
+        subtitles = await groupWordsIntoSubtitles(words, settings, fpsVal, autoFixViolations)
+        phase1Segments = subtitles.length
+      }
+    } else {
+      // APIキーなし: 既存ルールベース
+      console.log('[generate] No API key, using rule-based pipeline')
+      subtitles = await groupWordsIntoSubtitles(words, settings, fpsVal, autoFixViolations)
+      phase1Segments = subtitles.length
     }
 
-    console.log(`Generating subtitles for ${words.length} words...`)
-    console.log(`Language: ${settings.language}, FPS: ${fps}, Auto-fix: ${autoFixViolations}`)
+    console.log(`[generate] ${subtitles.length} subtitles generated`)
 
-    // 単語を字幕エントリにグループ化（言語別タイミングルール適用）
-    const subtitles = await groupWordsIntoSubtitles(words, settings, fps as FrameRate, autoFixViolations)
-
-    // SRTとVTTコンテンツを生成
+    // SRT / VTT 生成
     let srtContent: string
     if (includeSpeakerTags && speakerMapping) {
       srtContent = generateSRTContentWithSpeakers(subtitles, speakerMapping, words, 'brackets')
@@ -1031,22 +1345,43 @@ export async function POST(request: NextRequest) {
     }
     const vttContent = generateVTTContent(subtitles)
 
-    // タイミングバリデーション
-    let validation: SubtitleTimingValidation | undefined
+    // タイミングバリデーション（既存）
+    let timingValidation: SubtitleTimingValidation | undefined
     if (enableTimingValidation) {
-      validation = validateSubtitleTiming(subtitles, settings.language, fps as FrameRate)
-      console.log(`Validation: ${validation.isValid ? 'PASSED' : 'FAILED'} (${validation.errors} errors, ${validation.warnings} warnings)`)
+      timingValidation = validateSubtitleTiming(subtitles, lang, fpsVal)
+      console.log(`[timing validation] ${timingValidation.isValid ? 'PASSED' : 'FAILED'} (${timingValidation.errors} errors, ${timingValidation.warnings} warnings)`)
     }
 
-    console.log(`Generated ${subtitles.length} subtitle entries`)
+    // Phase 5: AI包括検証（APIキーがある場合のみ）
+    let aiValidation: SubtitleValidationResult | undefined
+    if (settings.lineBreakApiKey && subtitles.length > 0) {
+      console.log('[Phase5] AI holistic validation...')
+      const validationResult = await validateSubtitlesWithAI(
+        subtitles,
+        lang,
+        settings.lineBreakService,
+        settings.lineBreakApiKey
+      )
+      if (validationResult) {
+        aiValidation = validationResult
+        console.log(`[Phase5] Score: ${aiValidation.overallScore}, errors: ${aiValidation.errorCount}, warnings: ${aiValidation.warningCount}`)
+      }
+    }
 
     const result = {
       success: true,
       subtitles,
       srtContent,
       vttContent,
-      validation,
-      timingConfig: TIMING_CONFIG[settings.language],
+      validation: timingValidation,
+      aiValidation,
+      generationStats: {
+        phase1_segments: phase1Segments,
+        phase3_batchSize: usedAIPipeline ? subtitles.length : 0,
+        phase5_issues: aiValidation?.issues.length ?? 0,
+        totalAICalls: usedAIPipeline ? 3 : 0,
+      },
+      timingConfig: TIMING_CONFIG[lang],
     }
 
     return NextResponse.json(result)

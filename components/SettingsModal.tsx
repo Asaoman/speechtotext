@@ -22,10 +22,8 @@ const CLAUDE_MODELS = [
 
 const GEMINI_MODELS = [
   { value: 'gemini-2.5-flash-lite', label: 'Gemini 2.5 Flash-Lite', price: '低コスト', recommended: false, description: '高速・コスパ最強', tier: 'free' as const },
-  { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash', price: '低コスト', recommended: false, description: '高速・バランス型', tier: 'paid' as const },
+  { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash', price: '低コスト', recommended: true, description: '高速・バランス型（推奨）', tier: 'paid' as const },
   { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro', price: '$1.25/$10.00 per 1M tokens', recommended: false, description: '高性能・複雑タスク向け', tier: 'paid' as const },
-  { value: 'gemini-3-flash-preview', label: 'Gemini 3 Flash (最新)', price: 'プレビュー', recommended: true, description: '最新・大規模モデル並みの性能', tier: 'paid' as const },
-  { value: 'gemini-3.1-pro-preview', label: 'Gemini 3.1 Pro Preview', price: '有料プラン必須', recommended: false, description: '最新最高性能プレビュー版', tier: 'paid' as const },
 ]
 
 interface SettingsModalProps {

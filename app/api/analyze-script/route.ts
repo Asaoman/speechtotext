@@ -168,9 +168,8 @@ export async function POST(request: NextRequest) {
     }
 
     // モデル選択（デフォルトは高機能モデル）
-    // gemini-2.5-proが存在しない場合はgemini-1.5-proにフォールバック
-    const scriptModel = geminiModelScript || 'gemini-1.5-pro'
-    const lightModel = geminiModelLight || 'gemini-2.0-flash-exp'
+    const scriptModel = geminiModelScript || 'gemini-3-flash-preview'
+    const lightModel = geminiModelLight || 'gemini-2.5-flash-lite'
     
     console.log('[analyze-script] Using models:', { scriptModel, lightModel })
 

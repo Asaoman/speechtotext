@@ -349,6 +349,27 @@ async function proofreadWithClaude(
   }
 }
 
+// Gemini フォールバックチェーン（軽量→高性能）
+const GEMINI_FALLBACK_CHAIN = [
+  'gemini-2.5-flash-lite',     // 高速・低コスト
+  'gemini-2.5-flash',          // バランス型
+  'gemini-2.5-pro',            // 高性能
+]
+
+// 429エラー（クォータ制限）かどうかを判定
+function isQuotaExceededError(error: any): boolean {
+  const errorMessage = error?.message || ''
+  const errorString = JSON.stringify(error)
+  return (
+    errorMessage.includes('429') ||
+    errorMessage.includes('Too Many Requests') ||
+    errorMessage.includes('quota') ||
+    errorMessage.includes('RESOURCE_EXHAUSTED') ||
+    errorString.includes('429') ||
+    errorString.includes('quota')
+  )
+}
+
 // Gemini で単一テキストを校正
 async function proofreadTextWithGemini(
   text: string,
@@ -506,6 +527,64 @@ ${text}`
   }
 }
 
+// Gemini でフォールバック付き校正
+async function proofreadWithGeminiWithFallback(
+  text: string,
+  apiKey: string,
+  model: string,
+  language: string,
+  includeProperNouns: boolean,
+  customContext: string = '',
+  segments?: TranscriptionSegment[],
+  words?: TranscriptionWord[]
+) {
+  // まず指定されたモデルで試行
+  try {
+    const result = await proofreadWithGemini(
+      text, apiKey, model, language, includeProperNouns, customContext, segments, words
+    )
+    return result
+  } catch (error: any) {
+    // クォータ制限エラーの場合、フォールバックを試行
+    if (isQuotaExceededError(error)) {
+      console.log(`Gemini quota exceeded for model ${model}, trying fallback models...`)
+      
+      // フォールバックチェーンを試行（現在のモデル以外）
+      for (const fallbackModel of GEMINI_FALLBACK_CHAIN) {
+        if (fallbackModel === model) continue // 同じモデルはスキップ
+        
+        try {
+          console.log(`Trying fallback model: ${fallbackModel}`)
+          const result = await proofreadWithGemini(
+            text, apiKey, fallbackModel, language, includeProperNouns, customContext, segments, words
+          )
+          // フォールバック成功時、使用したモデル情報を含めて返す
+          return {
+            ...result,
+            model: fallbackModel,
+            fallbackUsed: true,
+            originalModel: model,
+            fallbackReason: 'クォータ制限のため別モデルを使用しました',
+          }
+        } catch (fallbackError: any) {
+          console.log(`Fallback model ${fallbackModel} also failed:`, fallbackError.message)
+          // このフォールバックも失敗した場合、次を試行
+          continue
+        }
+      }
+      
+      // すべてのフォールバックが失敗した場合
+      throw new Error(
+        `Gemini API クォータ制限: すべてのモデル（${model}, ${GEMINI_FALLBACK_CHAIN.join(', ')}）で制限を超過しました。` +
+        `しばらく待ってから再試行するか、別のAIサービス（OpenAI/Claude）をお試しください。`
+      )
+    }
+    
+    // クォータ制限以外のエラーはそのままスロー
+    throw error
+  }
+}
+
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
@@ -549,15 +628,17 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // 古いGeminiモデル名を新しいものに変換（後方互換性）
+    // 古いGeminiモデル名を最新モデルに変換（後方互換性）
     let actualModel = model
     if (service === 'gemini') {
       const modelMigrations: { [key: string]: string } = {
-        'gemini-1.5-flash-latest': 'gemini-2.5-flash-lite',
         'gemini-1.5-flash': 'gemini-2.5-flash-lite',
-        'gemini-1.5-pro-latest': 'gemini-1.5-pro',
-        'gemini-2.5-flash-preview-05-20': 'gemini-2.5-flash-lite',
-        'gemini-2.0-flash-exp': 'gemini-2.5-flash-lite', // 実験版から安定版へ
+        'gemini-1.5-flash-latest': 'gemini-2.5-flash-lite',
+        'gemini-1.5-pro': 'gemini-2.5-pro',
+        'gemini-1.5-pro-latest': 'gemini-2.5-pro',
+        'gemini-2.0-flash-exp': 'gemini-2.5-flash',
+        'gemini-2.5-flash-preview-05-20': 'gemini-2.5-flash',
+        'gemini-3-pro-preview': 'gemini-2.5-pro',
       }
       if (modelMigrations[model]) {
         actualModel = modelMigrations[model]
@@ -572,7 +653,8 @@ export async function POST(request: NextRequest) {
     } else if (service === 'claude') {
       result = await proofreadWithClaude(text, apiKey, actualModel, language, includeProperNouns, customContext, segments, words)
     } else if (service === 'gemini') {
-      result = await proofreadWithGemini(text, apiKey, actualModel, language, includeProperNouns, customContext, segments, words)
+      // フォールバック機能付きでGemini校正を実行
+      result = await proofreadWithGeminiWithFallback(text, apiKey, actualModel, language, includeProperNouns, customContext, segments, words)
     }
 
     return NextResponse.json(result)

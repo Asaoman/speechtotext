@@ -334,14 +334,16 @@ async function translateWithGemini(
   
   const genAI = new GoogleGenerativeAI(apiKey)
   
-  // モデル名のマッピング（念のため）
+  // モデル名のマッピング（旧モデル → 最新モデル）
   const modelMapping: Record<string, string> = {
     'gemini-1.5-flash': 'gemini-2.5-flash-lite',
     'gemini-1.5-flash-latest': 'gemini-2.5-flash-lite',
-    'gemini-2.0-flash-exp': 'gemini-2.5-flash-lite',
-    'gemini-2.5-flash-preview-05-20': 'gemini-2.5-flash-lite'
+    'gemini-1.5-pro': 'gemini-2.5-pro',
+    'gemini-2.0-flash-exp': 'gemini-2.5-flash',
+    'gemini-2.5-flash-preview-05-20': 'gemini-2.5-flash',
+    'gemini-3-pro-preview': 'gemini-2.5-pro',
   }
-  
+
   const actualModel = modelMapping[model] || model
   if (actualModel !== model) {
     console.log(`[translateWithGemini] モデル名を変換: ${model} → ${actualModel}`)
@@ -406,18 +408,20 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // デフォルトモデルとモデル名のマッピング（古いモデル名を新しいモデル名に変換）
+    // デフォルトモデルとモデル名のマッピング（旧モデル名 → 最新モデル名）
     const modelMapping: Record<string, string> = {
       'gemini-1.5-flash': 'gemini-2.5-flash-lite',
       'gemini-1.5-flash-latest': 'gemini-2.5-flash-lite',
-      'gemini-2.0-flash-exp': 'gemini-2.5-flash-lite',
-      'gemini-2.5-flash-preview-05-20': 'gemini-2.5-flash-lite'
+      'gemini-1.5-pro': 'gemini-2.5-pro',
+      'gemini-2.0-flash-exp': 'gemini-2.5-flash',
+      'gemini-2.5-flash-preview-05-20': 'gemini-2.5-flash',
+      'gemini-3-pro-preview': 'gemini-2.5-pro',
     }
-    
+
     const defaultModel = (
       service === 'openai' ? 'gpt-4o' :
       service === 'claude' ? 'claude-sonnet-4-20250514' :
-      (geminiModelTranslate || 'gemini-2.5-flash-lite')
+      (geminiModelTranslate || 'gemini-3-flash-preview')
     )
     
     const rawModel = model || defaultModel
@@ -511,18 +515,20 @@ export async function PUT(request: NextRequest) {
       )
     }
 
-    // モデル名のマッピング（古いモデル名を新しいモデル名に変換）
+    // モデル名のマッピング（旧モデル名 → 最新モデル名）
     const modelMapping: Record<string, string> = {
       'gemini-1.5-flash': 'gemini-2.5-flash-lite',
       'gemini-1.5-flash-latest': 'gemini-2.5-flash-lite',
-      'gemini-2.0-flash-exp': 'gemini-2.5-flash-lite',
-      'gemini-2.5-flash-preview-05-20': 'gemini-2.5-flash-lite'
+      'gemini-1.5-pro': 'gemini-2.5-pro',
+      'gemini-2.0-flash-exp': 'gemini-2.5-flash',
+      'gemini-2.5-flash-preview-05-20': 'gemini-2.5-flash',
+      'gemini-3-pro-preview': 'gemini-2.5-pro',
     }
-    
+
     const defaultModel = (
       service === 'openai' ? 'gpt-4o' :
       service === 'claude' ? 'claude-sonnet-4-20250514' :
-      'gemini-2.5-flash-lite'
+      'gemini-3-flash-preview'
     )
     
     const rawModel = model || defaultModel

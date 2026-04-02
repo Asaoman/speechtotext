@@ -4,7 +4,11 @@ import { useState, useEffect, useRef } from 'react'
 import { DictionaryEntry, Dictionary } from '@/lib/types'
 import { storage } from '@/lib/utils'
 
-export default function ProperNounsManager() {
+interface ProperNounsManagerProps {
+  refreshKey?: number
+}
+
+export default function ProperNounsManager({ refreshKey }: ProperNounsManagerProps) {
   const [dictionaries, setDictionaries] = useState<Dictionary[]>([])
   const [selectedDictionary, setSelectedDictionary] = useState<string>('')
   const [entries, setEntries] = useState<DictionaryEntry[]>([])
@@ -28,7 +32,8 @@ export default function ProperNounsManager() {
 
   useEffect(() => {
     loadFromLocalStorage()
-  }, [])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refreshKey])
 
   useEffect(() => {
     if (selectedDictionary) {

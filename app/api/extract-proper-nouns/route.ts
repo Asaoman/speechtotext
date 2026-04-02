@@ -71,7 +71,7 @@ async function extractWithGemini(
   modelName?: string
 ): Promise<ExtractedProperNoun[]> {
   const genAI = new GoogleGenerativeAI(apiKey)
-  const model = genAI.getGenerativeModel({ model: modelName || 'gemini-2.0-flash-exp' })
+  const model = genAI.getGenerativeModel({ model: modelName || 'gemini-3-flash-preview' })
 
   const prompt = buildExtractionPrompt(text, language, sourceType)
 
@@ -224,7 +224,7 @@ export async function POST(request: NextRequest) {
     console.log(`Text length: ${processedText.length} characters`)
 
     // Geminiで抽出（軽量モデルを使用）
-    const modelName = geminiModelLight || 'gemini-2.0-flash-exp'
+    const modelName = geminiModelLight || 'gemini-2.5-flash-lite'
     const extractedNouns = await extractWithGemini(
       processedText,
       language,

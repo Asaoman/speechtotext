@@ -66,8 +66,11 @@ export default function ProofreadingSection({
     setOriginalText(text)
   }
 
+  // フォールバック通知用state
+  const [fallbackInfo, setFallbackInfo] = useState<{ used: boolean; originalModel?: string; actualModel?: string; reason?: string } | null>(null)
+
   // 単一チャンクの校正処理
-  const proofreadSingleChunk = async (text: string): Promise<string> => {
+  const proofreadSingleChunk = async (text: string): Promise<{ correctedText: string; fallback?: { used: boolean; originalModel?: string; actualModel?: string; reason?: string } }> => {
     const apiKey = service === 'openai' ? apiKeys.openai : service === 'claude' ? apiKeys.claude : apiKeys.gemini
 
     const response = await fetch('/api/proofread', {
@@ -91,11 +94,16 @@ export default function ProofreadingSection({
       const contentType = response.headers.get('content-type')
       if (contentType && contentType.includes('application/json')) {
         const errorData = await response.json()
-        throw new Error(errorData.error || '校正に失敗しました')
+        // クォータ制限エラーの場合、より詳細なメッセージを表示
+        const errorMessage = errorData.error || '校正に失敗しました'
+        if (errorMessage.includes('クォータ') || errorMessage.includes('quota') || errorMessage.includes('429')) {
+          throw new Error(`${errorMessage}\n\n💡 ヒント: 設定画面で🆓無料モデル（Gemini 2.0 Flash）に切り替えてみてください。`)
+        }
+        throw new Error(errorMessage)
       } else {
         // HTMLエラーページの場合
-        const text = await response.text()
-        if (text.includes('Request Entity Too Large') || text.includes('413')) {
+        const responseText = await response.text()
+        if (responseText.includes('Request Entity Too Large') || responseText.includes('413')) {
           throw new Error('チャンクが大きすぎます')
         }
         throw new Error(`校正に失敗しました (HTTP ${response.status})`)
@@ -103,7 +111,21 @@ export default function ProofreadingSection({
     }
 
     const result = await response.json()
-    return result.corrected_text || text
+    
+    // フォールバック情報があれば返す
+    if (result.fallbackUsed) {
+      return {
+        correctedText: result.corrected_text || text,
+        fallback: {
+          used: true,
+          originalModel: result.originalModel,
+          actualModel: result.model,
+          reason: result.fallbackReason,
+        }
+      }
+    }
+    
+    return { correctedText: result.corrected_text || text }
   }
 
   const handleProofread = async () => {
@@ -120,6 +142,7 @@ export default function ProofreadingSection({
 
     setIsProofreading(true)
     setError('')
+    setFallbackInfo(null)
     setIsChunkedProcessing(false)
 
     try {
@@ -140,14 +163,23 @@ export default function ProofreadingSection({
 
       // チャンクが1つだけの場合は通常処理
       if (chunks.length === 1) {
-        const correctedText = await proofreadSingleChunk(originalText)
+        const result = await proofreadSingleChunk(originalText)
+        
+        // フォールバック情報があれば保存
+        if (result.fallback?.used) {
+          setFallbackInfo(result.fallback)
+        }
+        
         setProofreadingResult({
           success: true,
-          corrected_text: correctedText,
+          corrected_text: result.correctedText,
           changes: [],
           suggestions: [],
           service,
-          model,
+          model: result.fallback?.actualModel || model,
+          fallbackUsed: result.fallback?.used,
+          originalModel: result.fallback?.originalModel,
+          fallbackReason: result.fallback?.reason,
         })
         setLeftTab('result')
       } else {
@@ -156,17 +188,28 @@ export default function ProofreadingSection({
         setProcessingProgress({ current: 0, total: chunks.length })
 
         const correctedChunks: string[] = []
+        let lastFallback: typeof fallbackInfo = null
 
         for (let i = 0; i < chunks.length; i++) {
           setProcessingProgress({ current: i + 1, total: chunks.length })
 
-          const correctedText = await proofreadSingleChunk(chunks[i].text)
-          correctedChunks.push(correctedText)
+          const result = await proofreadSingleChunk(chunks[i].text)
+          correctedChunks.push(result.correctedText)
+          
+          // フォールバック情報を記録
+          if (result.fallback?.used) {
+            lastFallback = result.fallback
+          }
 
           // 少し待機（APIレート制限対策）
           if (i < chunks.length - 1) {
             await new Promise(resolve => setTimeout(resolve, 500))
           }
+        }
+
+        // フォールバック情報があれば保存
+        if (lastFallback) {
+          setFallbackInfo(lastFallback)
         }
 
         // チャンクを結合
@@ -178,7 +221,10 @@ export default function ProofreadingSection({
           changes: [],
           suggestions: [],
           service,
-          model,
+          model: lastFallback?.actualModel || model,
+          fallbackUsed: lastFallback?.used,
+          originalModel: lastFallback?.originalModel,
+          fallbackReason: lastFallback?.reason,
         })
         setLeftTab('result')
         setIsChunkedProcessing(false)
@@ -261,6 +307,24 @@ export default function ProofreadingSection({
           <div>
             {proofreadingResult && proofreadingResult.success ? (
               <>
+                {/* フォールバック使用時のインジケーター */}
+                {proofreadingResult.fallbackUsed && (
+                  <div style={{ 
+                    fontSize: '10px', 
+                    padding: '0.5rem 0.75rem', 
+                    backgroundColor: 'rgba(34, 197, 94, 0.1)', 
+                    borderRadius: '4px',
+                    marginBottom: '0.5rem',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.5rem'
+                  }}>
+                    <span style={{ color: 'rgb(34, 197, 94)' }}>✓</span>
+                    <span style={{ color: 'var(--text-muted)' }}>
+                      {proofreadingResult.originalModel} の代わりに {proofreadingResult.model} で校正
+                    </span>
+                  </div>
+                )}
                 <textarea
                   value={proofreadingResult.corrected_text}
                   readOnly
@@ -321,11 +385,45 @@ export default function ProofreadingSection({
         onOpenProperNouns={() => setShowProperNounsModal(true)}
       />
 
+      {/* フォールバック通知 */}
+      {fallbackInfo?.used && (
+        <div style={{ 
+          fontSize: '11px', 
+          padding: '0.75rem', 
+          backgroundColor: 'rgba(34, 197, 94, 0.1)', 
+          borderRadius: '6px',
+          border: '1px solid rgba(34, 197, 94, 0.3)',
+          marginBottom: '0.5rem'
+        }}>
+          <p style={{ fontWeight: 600, color: 'rgb(34, 197, 94)', marginBottom: '0.25rem' }}>
+            ✓ 別モデルで校正完了
+          </p>
+          <p style={{ color: 'var(--text-muted)', fontSize: '10px' }}>
+            {fallbackInfo.originalModel} → {fallbackInfo.actualModel}
+          </p>
+          <p style={{ color: 'var(--text-muted)', fontSize: '10px', marginTop: '0.25rem' }}>
+            {fallbackInfo.reason || 'クォータ制限のため自動的に別モデルを使用しました'}
+          </p>
+        </div>
+      )}
+
       {/* エラー */}
       {(!canProofread || error) && (
-        <p style={{ fontSize: '10px', color: '#dc2626', marginBottom: '0.75rem', padding: '0.5rem', backgroundColor: '#fef2f2', borderRadius: '4px' }}>
-          {!canProofread ? 'APIキー未設定' : error}
-        </p>
+        <div style={{ 
+          fontSize: '10px', 
+          color: '#dc2626', 
+          marginBottom: '0.75rem', 
+          padding: '0.75rem', 
+          backgroundColor: '#fef2f2', 
+          borderRadius: '6px',
+          border: '1px solid rgba(220, 38, 38, 0.2)',
+          whiteSpace: 'pre-wrap'
+        }}>
+          <p style={{ fontWeight: 600, marginBottom: '0.25rem' }}>
+            {!canProofread ? '⚠️ APIキー未設定' : '❌ エラー'}
+          </p>
+          <p>{!canProofread ? `${service === 'openai' ? 'OpenAI' : service === 'claude' ? 'Claude' : 'Google Gemini'} APIキーを設定してください` : error}</p>
+        </div>
       )}
 
       {/* 進捗バー（チャンク処理中のみ表示） */}

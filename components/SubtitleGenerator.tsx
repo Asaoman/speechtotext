@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useRef } from 'react'
-import { TranscriptionWord, TranscriptionResult, SubtitleSettings, SubtitleGenerationResult, SubtitleEntry, AIPreferences } from '@/lib/types'
+import { TranscriptionWord, TranscriptionResult, SubtitleSettings, SubtitleGenerationResult, SubtitleEntry, AIPreferences, TranscriptionProofreadResult } from '@/lib/types'
 import { downloadFile, generateTimestamp, formatTimestampSRT, formatTimestampVTT } from '@/lib/utils'
 
 interface SubtitleGeneratorProps {
@@ -11,6 +11,8 @@ interface SubtitleGeneratorProps {
   aiPreferences: AIPreferences
   onSubtitleGenerated?: (srt: string, vtt: string) => void
   navigatedFromTranscription?: boolean
+  proofreadResult?: TranscriptionProofreadResult | null
+  autoDetectedContext?: string
 }
 
 // テキストから疑似的なwordsデータを生成
@@ -114,8 +116,9 @@ function parseSRTFile(srtContent: string): SubtitleEntry[] {
   return entries
 }
 
-export default function SubtitleGenerator({ transcriptionResult, subtitleSettings, apiKeys, aiPreferences, onSubtitleGenerated, navigatedFromTranscription = false }: SubtitleGeneratorProps) {
+export default function SubtitleGenerator({ transcriptionResult, subtitleSettings, apiKeys, aiPreferences, onSubtitleGenerated, navigatedFromTranscription = false, proofreadResult, autoDetectedContext }: SubtitleGeneratorProps) {
   const [isGenerating, setIsGenerating] = useState(false)
+  const [isAIGenerating, setIsAIGenerating] = useState(false)
   const [result, setResult] = useState<SubtitleGenerationResult | null>(null)
   const [error, setError] = useState('')
   const [editingSubtitles, setEditingSubtitles] = useState<SubtitleEntry[]>([])
@@ -328,6 +331,72 @@ export default function SubtitleGenerator({ transcriptionResult, subtitleSetting
     }
   }
 
+  const handleAIGenerate = async () => {
+    const segments = transcriptionResult?.segments
+    if (!segments || segments.length === 0) {
+      setError('セグメントデータがありません。書き起こしタブでElevenLabsまたはWhisperで変換した音声が必要です。')
+      return
+    }
+    if (!apiKeys.gemini) {
+      setError('AI字幕生成にはGemini APIキーが必要です。設定から入力してください。')
+      return
+    }
+
+    // proofread issues から校正修正リストを作成
+    const corrections = (proofreadResult?.issues ?? [])
+      .filter((issue) => issue.suggestion && issue.original)
+      .map((issue) => ({ original: issue.original, suggestion: issue.suggestion! }))
+
+    setIsAIGenerating(true)
+    setError('')
+    try {
+      const res = await fetch('/api/subtitles/ai-generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          segments: segments.map((s: any) => ({ start: s.start, end: s.end, text: s.text })),
+          corrections,
+          maxCharsPerLine: localMaxCharsPerLine,
+          maxLines: localMaxLines,
+          language: localLanguage,
+          context: autoDetectedContext || undefined,
+          apiKey: apiKeys.gemini,
+          model: aiPreferences.geminiModel || 'gemini-2.5-flash',
+        }),
+      })
+      const data = await res.json()
+      if (!data.success) {
+        throw new Error(data.error || 'AI字幕生成に失敗しました')
+      }
+
+      // API response: {index, start, end, lines[]} → SubtitleEntry: {index, startTime, endTime, text, lines}
+      const subtitles: SubtitleEntry[] = data.subtitles.map((s: any) => ({
+        index: s.index,
+        startTime: s.start,
+        endTime: s.end,
+        text: s.lines.join('\n'),
+        lines: s.lines,
+      }))
+
+      const srtContent = subtitles.map((s, i) =>
+        `${i + 1}\n${formatTimestampSRT(s.startTime)} --> ${formatTimestampSRT(s.endTime)}\n${s.lines.join('\n')}\n`
+      ).join('\n')
+      const vttContent = 'WEBVTT\n\n' + subtitles.map((s) =>
+        `${formatTimestampVTT(s.startTime)} --> ${formatTimestampVTT(s.endTime)}\n${s.lines.join('\n')}\n`
+      ).join('\n')
+
+      setResult({ success: true, subtitles, srtContent, vttContent })
+      setEditingSubtitles(subtitles)
+      setTextTab('preview')
+
+      if (onSubtitleGenerated) onSubtitleGenerated(srtContent, vttContent)
+    } catch (err: any) {
+      setError(err.message || 'AI字幕生成中にエラーが発生しました')
+    } finally {
+      setIsAIGenerating(false)
+    }
+  }
+
   const handleUpdateSubtitle = (index: number, field: keyof SubtitleEntry, value: any) => {
     const updated = [...editingSubtitles]
     updated[index] = { ...updated[index], [field]: value }
@@ -392,6 +461,20 @@ export default function SubtitleGenerator({ transcriptionResult, subtitleSetting
     // 編集後のデータを親に送信
     if (onSubtitleGenerated) {
       onSubtitleGenerated(regenerateSRT(), regenerateVTT())
+    }
+  }
+
+  const handleBulkDownload = () => {
+    const ts = generateTimestamp()
+    const srtContent = regenerateSRT()
+    const vttContent = regenerateVTT()
+    downloadFile(srtContent, `subtitles_${ts}.srt`, 'text/plain')
+    // Short delay to avoid browsers blocking the second download
+    setTimeout(() => {
+      downloadFile(vttContent, `subtitles_${ts}.vtt`, 'text/vtt')
+    }, 200)
+    if (onSubtitleGenerated) {
+      onSubtitleGenerated(srtContent, vttContent)
     }
   }
 
@@ -581,23 +664,57 @@ export default function SubtitleGenerator({ transcriptionResult, subtitleSetting
       </div>
 
       {hasTranscriptionData && (
-        <button
-          onClick={handleGenerate}
-          disabled={isGenerating}
-          className="btn-primary"
-          style={{ width: '100%', padding: '0.75rem', fontSize: '12px', marginBottom: result ? '1rem' : 0 }}
-        >
-          {isGenerating ? '生成中...' : '字幕生成'}
-        </button>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginBottom: result ? '1rem' : 0 }}>
+          {/* AI字幕生成 — セグメントデータ + 校正結果がある場合に表示 */}
+          {transcriptionResult?.segments && transcriptionResult.segments.length > 0 && apiKeys.gemini && (
+            <button
+              onClick={handleAIGenerate}
+              disabled={isAIGenerating || isGenerating}
+              className="btn-primary"
+              style={{ width: '100%', padding: '0.75rem', fontSize: '13px', fontWeight: 700, position: 'relative' }}
+            >
+              {isAIGenerating ? (
+                <span>✦ AI字幕生成中...</span>
+              ) : (
+                <span>
+                  ✦ AI字幕生成
+                  {proofreadResult?.issues && proofreadResult.issues.length > 0 && (
+                    <span style={{ marginLeft: '0.5rem', fontSize: '11px', opacity: 0.8 }}>
+                      （校正{proofreadResult.issues.length}件適用）
+                    </span>
+                  )}
+                </span>
+              )}
+            </button>
+          )}
+          {/* アルゴリズム字幕生成（フォールバック） */}
+          <button
+            onClick={handleGenerate}
+            disabled={isGenerating || isAIGenerating}
+            className={transcriptionResult?.segments && transcriptionResult.segments.length > 0 && apiKeys.gemini ? 'btn' : 'btn-primary'}
+            style={{ width: '100%', padding: '0.625rem', fontSize: '12px' }}
+          >
+            {isGenerating ? '生成中...' : transcriptionResult?.segments && transcriptionResult.segments.length > 0 && apiKeys.gemini ? 'アルゴリズム字幕生成（旧）' : '字幕生成'}
+          </button>
+        </div>
       )}
 
       {result && result.success && editingSubtitles.length > 0 && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
 
           <div>
-            <h3 style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text)', marginBottom: '0.75rem' }}>
-              📥 ダウンロード
-            </h3>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.75rem' }}>
+              <h3 style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text)' }}>
+                📥 ダウンロード
+              </h3>
+              <button
+                onClick={handleBulkDownload}
+                className="btn-primary"
+                style={{ fontSize: '11px', padding: '0.35rem 0.75rem' }}
+              >
+                ⬇ 一括DL (SRT+VTT)
+              </button>
+            </div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '0.5rem', marginBottom: '0.75rem' }}>
               <button
                 onClick={() => handleDownloadEdited('srt')}

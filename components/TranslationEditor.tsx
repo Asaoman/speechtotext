@@ -51,13 +51,15 @@ export default function TranslationEditor({
       model = aiPreferences.geminiModelTranslate || aiPreferences.geminiModel
     }
     
-    // Geminiモデル名のマッピング（古いモデル名を新しいモデル名に変換）
+    // Geminiモデル名のマッピング（旧モデル名 → 最新モデル名）
     if (aiPreferences.defaultService === 'gemini') {
       const modelMapping: Record<string, string> = {
         'gemini-1.5-flash': 'gemini-2.5-flash-lite',
         'gemini-1.5-flash-latest': 'gemini-2.5-flash-lite',
-        'gemini-2.0-flash-exp': 'gemini-2.5-flash-lite',
-        'gemini-2.5-flash-preview-05-20': 'gemini-2.5-flash-lite'
+        'gemini-1.5-pro': 'gemini-2.5-pro',
+        'gemini-2.0-flash-exp': 'gemini-2.5-flash',
+        'gemini-2.5-flash-preview-05-20': 'gemini-2.5-flash',
+        'gemini-3-pro-preview': 'gemini-2.5-pro',
       }
       
       const mappedModel = modelMapping[model] || model

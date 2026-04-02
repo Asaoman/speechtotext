@@ -13,6 +13,9 @@ interface OptimizeLineBreaksRequest {
   language: 'en' | 'ja'
   service: 'chatgpt' | 'claude' | 'gemini'
   apiKey: string
+  // バッチモード
+  mode?: 'single' | 'batch'
+  texts?: string[]  // batch モード時の全テキスト配列
 }
 
 // ChatGPTで改行位置を最適化
@@ -634,17 +637,136 @@ ${text}`
   return optimizedText.split('\n').filter(line => line.trim() !== '')
 }
 
+// バッチモード: 全字幕テキストを1回のAI呼び出しで処理
+async function optimizeBatchWithGemini(
+  texts: string[],
+  maxCharsPerLine: number,
+  maxLines: number,
+  language: 'en' | 'ja',
+  apiKey: string
+): Promise<{ index: number; lines: string[] }[]> {
+  const genAI = new GoogleGenerativeAI(apiKey)
+  const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' })
+
+  const inputList = texts.map((t, i) => `${i + 1}: ${t}`).join('\n')
+
+  const prompt = language === 'ja'
+    ? `あなたはプロの字幕エディターです。以下の${texts.length}個の字幕テキストそれぞれに対して、最適な改行位置を決定せよ。
+
+設定:
+- 1行の最大文字数: ${maxCharsPerLine}文字
+- 最大行数: ${maxLines}行
+- 言語: 日本語
+
+絶対禁止:
+- 助詞で行を開始しない（は が を に へ と から より で や の も）
+- 主語と述語を分断しない
+- 修飾語と被修飾語を分断しない
+- 固有名詞を分断しない（パラノーマルアクティビティ等）
+- 数量表現を分断しない（100億円等）
+
+推奨改行ポイント（優先順）:
+1. 文末表現の後（〜た、〜です、〜ます、〜よ、〜ね）
+2. 接続詞の前（しかし、そして、また、だから、でも）
+3. 長い接続助詞の前（〜けど、〜から、〜ので）
+4. 意味の単位が完結している読点位置
+
+視覚的バランス:
+- 2行の場合: 上下の文字数をできるだけ均等に
+- 極端な不均衡を避ける（上2文字/下18文字など禁止）
+- 1行に収まる場合は改行しない
+
+入力:
+${inputList}
+
+出力形式（JSONのみ、コードブロックなし）:
+{"results": [{"index": 1, "lines": ["行1", "行2"]}, {"index": 2, "lines": ["行1"]}, ...]}`
+    : `You are a professional subtitle editor. For each of the ${texts.length} subtitle texts below, determine the optimal line break positions.
+
+Settings:
+- Max chars per line: ${maxCharsPerLine}
+- Max lines: ${maxLines}
+- Language: English
+
+Rules:
+- NEVER break after articles (a, an, the) or possessives
+- NEVER break between subject and verb, verb and object
+- NEVER break between adjectives and the nouns they modify
+- Break BEFORE conjunctions (and, but, or, because, although)
+- Keep proper nouns intact
+- Keep numbers with their units (25 years, $100)
+- Prefer "bottom-heavy" layout (shorter top line)
+
+Input:
+${inputList}
+
+Output format (JSON only, no code blocks):
+{"results": [{"index": 1, "lines": ["line1", "line2"]}, {"index": 2, "lines": ["line1"]}, ...]}`
+
+  const result = await model.generateContent({
+    contents: [{ role: 'user', parts: [{ text: prompt }] }],
+    generationConfig: {
+      temperature: 0.2,
+      responseMimeType: 'application/json',
+    },
+  })
+
+  const rawText = result.response.text().trim()
+  const parsed = JSON.parse(rawText)
+
+  if (!Array.isArray(parsed.results)) {
+    throw new Error('Batch response missing results array')
+  }
+
+  return parsed.results.map((r: any) => ({
+    index: r.index,
+    lines: Array.isArray(r.lines) ? r.lines.filter((l: any) => typeof l === 'string' && l.trim()) : [texts[r.index - 1]],
+  }))
+}
+
 export async function POST(request: NextRequest) {
   try {
     const body: OptimizeLineBreaksRequest = await request.json()
-    const { text, maxCharsPerLine, maxLines, language, service, apiKey } = body
-
-    if (!text) {
-      return NextResponse.json({ error: 'Text is required' }, { status: 400 })
-    }
+    const { maxCharsPerLine, maxLines, language, service, apiKey, mode, texts } = body
 
     if (!apiKey) {
       return NextResponse.json({ error: 'API key is required' }, { status: 400 })
+    }
+
+    // バッチモード
+    if (mode === 'batch') {
+      if (!texts || texts.length === 0) {
+        return NextResponse.json({ error: 'texts array is required for batch mode' }, { status: 400 })
+      }
+
+      let results: { index: number; lines: string[] }[]
+
+      if (service === 'gemini') {
+        results = await optimizeBatchWithGemini(texts, maxCharsPerLine, maxLines, language, apiKey)
+      } else {
+        // ChatGPTとClaudeはバッチ未対応 → Geminiと同形式で個別処理してフォールバック
+        results = await Promise.all(texts.map(async (t, i) => {
+          try {
+            let lines: string[]
+            if (service === 'chatgpt') {
+              lines = await optimizeWithChatGPT(t, maxCharsPerLine, maxLines, language, apiKey)
+            } else {
+              lines = await optimizeWithClaude(t, maxCharsPerLine, maxLines, language, apiKey)
+            }
+            return { index: i + 1, lines }
+          } catch {
+            return { index: i + 1, lines: [t] }
+          }
+        }))
+      }
+
+      return NextResponse.json({ success: true, results })
+    }
+
+    // シングルモード（既存動作）
+    const { text } = body
+    if (!text) {
+      return NextResponse.json({ error: 'Text is required' }, { status: 400 })
     }
 
     let lines: string[]

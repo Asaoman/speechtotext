@@ -59,7 +59,7 @@ async function transcribeWithElevenLabs(audioFile: File, apiKey: string, enableD
 
     const formData = new FormData()
     formData.append('file', new Blob([buffer], { type: audioFile.type }), audioFile.name)
-    formData.append('model_id', 'scribe_v1')
+    formData.append('model_id', 'scribe_v2')
     formData.append('timestamps_granularity', 'word')
     if (enableDiarization) {
       formData.append('diarize', 'true')

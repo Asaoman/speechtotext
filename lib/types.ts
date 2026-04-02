@@ -163,6 +163,13 @@ export interface SubtitleGenerationResult {
   subtitles: SubtitleEntry[];
   srtContent: string;
   vttContent: string;
+  aiValidation?: SubtitleValidationResult;   // Phase 5 AI包括検証結果
+  generationStats?: {
+    phase1_segments: number;
+    phase3_batchSize: number;
+    phase5_issues: number;
+    totalAICalls: number;
+  };
   error?: string;
 }
 
@@ -419,6 +426,16 @@ export interface TranscriptionProofreadResult {
   error?: string;
 }
 
+// ローカルプロジェクト（音声→テキスト専用、DB不要）
+export interface SpeechProject {
+  id: string;
+  name: string;
+  context: string;          // auto-generated, editable by user
+  nouns: DetectedNoun[];    // per-project dictionary
+  contextFiles?: { path: string; name: string }[];  // MD reference files
+  createdAt: string;
+}
+
 // ============================================
 // 字幕タイミングバリデーション関連の型定義
 // ============================================
@@ -540,6 +557,27 @@ export interface ProperNounExtractionResult {
   newCount: number;         // 新規抽出数
   duplicateCount: number;   // 既存と重複した数
   error?: string;
+}
+
+// ============================================
+// 字幕AI包括検証（Phase 5）
+// ============================================
+
+export interface SubtitleValidationIssue {
+  subtitleIndex: number       // 1始まり
+  type: 'cutpoint' | 'linebreak' | 'continuity' | 'length'
+  severity: 'error' | 'warning' | 'info'
+  message: string
+  suggestion?: string         // 修正後の推奨テキスト
+  affectsIndices?: number[]   // 関連する他の字幕インデックス
+}
+
+export interface SubtitleValidationResult {
+  issues: SubtitleValidationIssue[]
+  overallScore: number        // 0-100
+  passedCount: number
+  warningCount: number
+  errorCount: number
 }
 
 // ============================================

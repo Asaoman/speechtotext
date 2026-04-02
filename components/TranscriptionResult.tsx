@@ -17,6 +17,7 @@ interface TranscriptionResultProps {
     fileName?: string
     service?: string
     isNew?: boolean
+    sessionId?: string
   }
   onStartSubtitleGeneration?: () => void
   onSaved?: (id: string) => void
@@ -173,7 +174,7 @@ export default function TranscriptionResultComponent({
 
   const handleDownload = (format: 'txt' | 'json' | 'srt' | 'vtt') => {
     const timestamp = generateTimestamp()
-    const baseName = meta?.fileName?.replace(/\.[^.]+$/, '') || 'transcription'
+    const baseName = meta?.fileName?.replace(/\.[^.]+$/, '') || meta?.sessionId || meta?.id || 'transcription'
     switch (format) {
       case 'txt':
         downloadFile(result.text, `${baseName}_書き起こし_${timestamp}.txt`, 'text/plain')

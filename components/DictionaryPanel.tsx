@@ -29,36 +29,22 @@ interface DictionaryPanelProps {
   globalNouns: DetectedNoun[]
   onRemoveGlobalNoun: (term: string) => void
   pendingNouns?: DetectedNoun[]
-  confidenceThreshold?: number
-  onConfidenceThresholdChange?: (v: number) => void
   onApprovePendingNoun?: (noun: DetectedNoun) => void
   onRejectPendingNoun?: (term: string) => void
-  onManualAddNoun?: (term: string, reading?: string) => void
   onUpdateGlobalNoun?: (oldTerm: string, newTerm: string, reading?: string) => void
+  activeProjectName?: string | null
 }
 
 export default function DictionaryPanel({
   globalNouns,
   onRemoveGlobalNoun,
   pendingNouns = [],
-  confidenceThreshold = 0.75,
-  onConfidenceThresholdChange,
   onApprovePendingNoun,
   onRejectPendingNoun,
-  onManualAddNoun,
   onUpdateGlobalNoun,
+  activeProjectName,
 }: DictionaryPanelProps) {
   const approvedNouns = globalNouns.filter((n: any) => n.approved !== false)
-
-  // Manual registration state
-  const [newTerm, setNewTerm] = useState('')
-  const [newReading, setNewReading] = useState('')
-  const handleManualAdd = () => {
-    if (!newTerm.trim()) return
-    onManualAddNoun?.(newTerm.trim(), newReading.trim() || undefined)
-    setNewTerm('')
-    setNewReading('')
-  }
 
   // Inline edit state
   const [editingTerm, setEditingTerm] = useState<string | null>(null)
@@ -145,37 +131,21 @@ export default function DictionaryPanel({
 
       {/* Header */}
       <div style={{
-        padding: '1rem 1.125rem',
+        padding: '0.75rem 1.125rem',
         borderBottom: '1px solid var(--border)',
         flexShrink: 0,
+        display: 'flex',
+        alignItems: 'center',
+        gap: '0.5rem',
       }}>
-        <h2 style={{ fontSize: '14px', fontWeight: 700, color: 'var(--text)', letterSpacing: '-0.01em' }}>📚 辞書</h2>
-      </div>
-
-      {/* Confidence threshold slider */}
-      <div style={{ padding: '0.75rem 1rem', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.4rem' }}>
-          <span style={{ fontSize: '10px', fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-            スクリーニングしきい値
+        <h2 style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text)', letterSpacing: '-0.01em', flex: 1 }}>📚 辞書</h2>
+        {activeProjectName ? (
+          <span style={{ fontSize: '10px', color: 'var(--accent)', fontWeight: 700, padding: '2px 0.5rem', borderRadius: '4px', background: 'rgba(var(--accent-rgb,250,204,21),0.12)', flexShrink: 0 }}>
+            📁 {activeProjectName}
           </span>
-          <span style={{ fontSize: '11px', fontWeight: 700, color: 'var(--accent)' }}>
-            {Math.round(confidenceThreshold * 100)}%
-          </span>
-        </div>
-        <input
-          type="range"
-          min={0.5}
-          max={0.95}
-          step={0.05}
-          value={confidenceThreshold}
-          onChange={(e) => onConfidenceThresholdChange?.(parseFloat(e.target.value))}
-          style={{ width: '100%', accentColor: 'var(--accent)', cursor: 'pointer' }}
-        />
-        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '9px', color: 'var(--text-muted)', marginTop: '2px' }}>
-          <span>50%</span>
-          <span style={{ fontSize: '9px', color: 'var(--text-muted)' }}>これ未満の確信度を要確認とする</span>
-          <span>95%</span>
-        </div>
+        ) : (
+          <span style={{ fontSize: '10px', color: 'var(--text-muted)', flexShrink: 0 }}>💬 セッション</span>
+        )}
       </div>
 
       {/* Pending nouns (要確認) */}
@@ -345,47 +315,6 @@ export default function DictionaryPanel({
         )}
       </div>
 
-      {/* Manual registration */}
-      <div style={{ padding: '0.75rem 1rem', flexShrink: 0 }}>
-        <div style={{ fontSize: '10px', fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '0.5rem' }}>
-          手動登録
-        </div>
-        <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
-          <input
-            type="text"
-            placeholder="単語"
-            value={newTerm}
-            onChange={(e) => setNewTerm(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && handleManualAdd()}
-            style={{ flex: 2, padding: '0.3rem 0.5rem', fontSize: '12px', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: '4px', color: 'var(--text)', outline: 'none' }}
-          />
-          <input
-            type="text"
-            placeholder="よみ（任意）"
-            value={newReading}
-            onChange={(e) => setNewReading(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && handleManualAdd()}
-            style={{ flex: 2, padding: '0.3rem 0.5rem', fontSize: '12px', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: '4px', color: 'var(--text)', outline: 'none' }}
-          />
-          <button
-            onClick={handleManualAdd}
-            disabled={!newTerm.trim()}
-            style={{
-              padding: '0.3rem 0.6rem',
-              fontSize: '11px',
-              fontWeight: 700,
-              background: newTerm.trim() ? 'var(--accent)' : 'var(--border)',
-              color: newTerm.trim() ? 'white' : 'var(--text-muted)',
-              border: 'none',
-              borderRadius: '4px',
-              cursor: newTerm.trim() ? 'pointer' : 'default',
-              flexShrink: 0,
-            }}
-          >
-            追加
-          </button>
-        </div>
-      </div>
     </div>
   )
 }

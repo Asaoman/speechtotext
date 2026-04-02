@@ -1,6 +1,7 @@
 # Speech to Text - React/Next.js版
 
 ## クイックスタート（ローカル起動）
+cd　で場所移動せな
 
 ```
 cd "C:\Users\akihi\OneDrive\ドキュメント\App\Speech to Text\speech-to-text-react"

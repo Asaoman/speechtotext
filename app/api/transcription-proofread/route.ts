@@ -244,7 +244,17 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: true, issues: [], detectedNouns: [] })
     }
 
-    const actualModel = model || 'gemini-2.5-flash'
+    const MODEL_MIGRATIONS: Record<string, string> = {
+      'gemini-3-flash-preview': 'gemini-2.5-flash',
+      'gemini-3.1-pro-preview': 'gemini-2.5-pro',
+      'gemini-3-pro-preview': 'gemini-2.5-pro',
+      'gemini-1.5-flash': 'gemini-2.5-flash-lite',
+      'gemini-1.5-flash-latest': 'gemini-2.5-flash-lite',
+      'gemini-2.5-flash-preview-05-20': 'gemini-2.5-flash',
+    }
+    const rawModel = model || 'gemini-2.5-flash'
+    const actualModel = MODEL_MIGRATIONS[rawModel] ?? rawModel
+    if (rawModel !== actualModel) console.log(`[transcription-proofread] model migration: ${rawModel} -> ${actualModel}`)
     const genAI = new GoogleGenerativeAI(apiKey)
     const geminiModel = genAI.getGenerativeModel({ model: actualModel })
 

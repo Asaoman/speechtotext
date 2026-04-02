@@ -197,10 +197,10 @@ export const DEFAULT_AI_PREFERENCES: AIPreferences = {
   defaultService: 'gemini', // Gemini 2.5 Pro（安定版・高性能）
   openaiModel: 'gpt-4o-mini', // OpenAIで最もコスパが良い
   claudeModel: 'claude-3-5-sonnet-20241022', // Claudeで最もコスパが良い
-  geminiModel: 'gemini-3-flash-preview', // Gemini 3 Flash（最新・高性能）
-  geminiModelScript: 'gemini-3-flash-preview', // 脚本分析用（最新・高性能）
-  geminiModelTranslate: 'gemini-3-flash-preview', // 翻訳用（最新・高性能）
-  geminiModelLight: 'gemini-3-flash-preview', // スクリーニング用
+  geminiModel: 'gemini-2.5-flash', // Gemini 2.5 Flash（安定・高性能）
+  geminiModelScript: 'gemini-2.5-pro', // 脚本分析用（高性能）
+  geminiModelTranslate: 'gemini-2.5-flash', // 翻訳用
+  geminiModelLight: 'gemini-2.5-flash-lite', // スクリーニング用（軽量）
 };
 
 // ローカルストレージ操作

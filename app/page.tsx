@@ -9,15 +9,39 @@ import MovieSubtitleTab from '@/components/MovieSubtitleTab'
 import HistorySidebar from '@/components/HistorySidebar'
 import DictionaryPanel from '@/components/DictionaryPanel'
 import SRTUpload from '@/components/SRTUpload'
-import { TranscriptionResult as TranscriptionResultType, ProofreadingResult, ApiKeys, SubtitleSettings, AIPreferences, TranscriptionProofreadResult, DetectedNoun, DictionaryEntry } from '@/lib/types'
+import { TranscriptionResult as TranscriptionResultType, ProofreadingResult, ApiKeys, SubtitleSettings, AIPreferences, TranscriptionProofreadResult, DetectedNoun, DictionaryEntry, SpeechProject } from '@/lib/types'
 import { storage, generateTimestamp } from '@/lib/utils'
 import { useTheme } from '@/lib/ThemeContext'
 
-const GLOBAL_NOUN_STOCK_KEY = 'speech_global_proper_nouns'
+const SPEECH_PROJECTS_KEY = 'speech_projects_v1'
+const STANDALONE_NOUNS_KEY = 'speech_standalone_nouns'
 const RECENT_TRANSCRIPTIONS_KEY = 'speech_recent_transcriptions'
-const CONFIDENCE_THRESHOLD_KEY = 'speech_confidence_threshold'
 const PROOFREAD_CACHE_KEY = 'speech_proofread_cache_v2'
+// All nouns the API returns have confidence ≥ 0.65 (enforced in prompt).
+// We auto-approve everything at 0.65+ so nothing falls through.
+// Pending bucket catches anything below 0.65 (edge cases / future tuning).
+const PENDING_NOUN_THRESHOLD = 0.50
+const AUTO_APPROVE_THRESHOLD = 0.65
 const MAX_RECENT = 50
+
+function loadSpeechProjects(): SpeechProject[] {
+  if (typeof window === 'undefined') return []
+  try { return JSON.parse(localStorage.getItem(SPEECH_PROJECTS_KEY) || '[]') } catch { return [] }
+}
+function saveSpeechProjects(projects: SpeechProject[]) {
+  try { localStorage.setItem(SPEECH_PROJECTS_KEY, JSON.stringify(projects)) } catch {}
+}
+function loadStandaloneNouns(): DetectedNoun[] {
+  if (typeof window === 'undefined') return []
+  try { return JSON.parse(localStorage.getItem(STANDALONE_NOUNS_KEY) || '[]') } catch { return [] }
+}
+function updateSessionMeta(sessionId: string, patch: Record<string, any>) {
+  try {
+    const items = JSON.parse(localStorage.getItem(RECENT_TRANSCRIPTIONS_KEY) || '[]')
+    const updated = items.map((item: any) => item.id === sessionId ? { ...item, ...patch } : item)
+    localStorage.setItem(RECENT_TRANSCRIPTIONS_KEY, JSON.stringify(updated))
+  } catch {}
+}
 
 function hashText(text: string): string {
   let h = 5381
@@ -91,38 +115,60 @@ export default function Home() {
   const [resultQueue, setResultQueue] = useState<{ result: TranscriptionResultType; meta: any }[]>([])
   const [selectedQueueIndex, setSelectedQueueIndex] = useState(0)
   const [historyRefreshKey, setHistoryRefreshKey] = useState(0)
-  const [dictionaryRefreshKey, setDictionaryRefreshKey] = useState(0)
+
   const [isTranscribing, setIsTranscribing] = useState(false)
   const [transcriptionProofreadResult, setTranscriptionProofreadResult] = useState<TranscriptionProofreadResult | null>(null)
   const [isAutoProofreading, setIsAutoProofreading] = useState(false)
   const [proofreadError, setProofreadError] = useState<string | null>(null)
-  const [globalNounStock, setGlobalNounStock] = useState<DetectedNoun[]>(() => {
-    if (typeof window === 'undefined') return []
-    try {
-      const stored = localStorage.getItem(GLOBAL_NOUN_STOCK_KEY)
-      return stored ? JSON.parse(stored) : []
-    } catch {
-      return []
-    }
-  })
-  const globalNounStockRef = useRef<DetectedNoun[]>(globalNounStock)
-  useEffect(() => { globalNounStockRef.current = globalNounStock }, [globalNounStock])
+  // ===== Project / noun architecture =====
+  const [speechProjects, setSpeechProjects] = useState<SpeechProject[]>(loadSpeechProjects)
+  const [activeProjectId, setActiveProjectId] = useState<string | null>(null)
+  const [standaloneNouns, setStandaloneNouns] = useState<DetectedNoun[]>(loadStandaloneNouns)
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null)
 
-  const [confidenceThreshold, setConfidenceThreshold] = useState<number>(() => {
-    if (typeof window === 'undefined') return 0.75
-    return parseFloat(localStorage.getItem(CONFIDENCE_THRESHOLD_KEY) || '0.75')
-  })
-  const [subtitleContent, setSubtitleContent] = useState<{ srt: string; vtt: string } | null>(null)
+  const activeProject = useMemo(
+    () => speechProjects.find((p) => p.id === activeProjectId) ?? null,
+    [speechProjects, activeProjectId]
+  )
+  const activeNouns: DetectedNoun[] = useMemo(
+    () => activeProject?.nouns ?? standaloneNouns,
+    [activeProject, standaloneNouns]
+  )
+  const activeNounsRef = useRef<DetectedNoun[]>(activeNouns)
+  useEffect(() => { activeNounsRef.current = activeNouns }, [activeNouns])
+  const activeProjectIdRef = useRef<string | null>(activeProjectId)
+  useEffect(() => { activeProjectIdRef.current = activeProjectId }, [activeProjectId])
+  const speechProjectsRef = useRef<SpeechProject[]>(speechProjects)
+  useEffect(() => { speechProjectsRef.current = speechProjects }, [speechProjects])
+
+  const updateActiveNouns = useCallback((updater: (prev: DetectedNoun[]) => DetectedNoun[]) => {
+    const projId = activeProjectIdRef.current
+    if (projId) {
+      setSpeechProjects((prev) => {
+        const updated = prev.map((p) =>
+          p.id === projId ? { ...p, nouns: updater(p.nouns) } : p
+        )
+        saveSpeechProjects(updated)
+        return updated
+      })
+    } else {
+      setStandaloneNouns((prev) => {
+        const updated = updater(prev)
+        try { localStorage.setItem(STANDALONE_NOUNS_KEY, JSON.stringify(updated)) } catch {}
+        return updated
+      })
+    }
+  }, [])
+
   const [navigatedFromTranscription, setNavigatedFromTranscription] = useState(false)
-  const [currentProjectId, setCurrentProjectId] = useState<string | null>(storage.getCurrentProjectId())
+  const [currentProjectId] = useState<string | null>(storage.getCurrentProjectId())
   const [movieProjectIdToLoad, setMovieProjectIdToLoad] = useState<string | null>(null)
-  const [transcriptionContext, setTranscriptionContext] = useState('')
-  const [showContextInput, setShowContextInput] = useState(false)
   const [autoDetectedContext, setAutoDetectedContext] = useState('')
   const transcriptionContextRef = useRef('')
   const autoDetectedContextRef = useRef('')
-  useEffect(() => { transcriptionContextRef.current = transcriptionContext }, [transcriptionContext])
+  const currentSessionIdRef = useRef<string | null>(null)
   useEffect(() => { autoDetectedContextRef.current = autoDetectedContext }, [autoDetectedContext])
+  useEffect(() => { currentSessionIdRef.current = currentSessionId }, [currentSessionId])
 
   const handleSaveApiKeys = (keys: ApiKeys) => {
     setApiKeys(keys)
@@ -138,6 +184,21 @@ export default function Home() {
     setAIPreferences(preferences)
     storage.setAIPreferences(preferences)
   }
+
+  // Load content of all context files attached to the active project
+  const loadProjectContextFileContent = useCallback(async (): Promise<string> => {
+    const proj = speechProjectsRef.current.find((p) => p.id === activeProjectIdRef.current)
+    if (!proj?.contextFiles?.length) return ''
+    const results = await Promise.allSettled(
+      proj.contextFiles.map((f) =>
+        fetch(`/api/read-file?path=${encodeURIComponent(f.path)}`).then((r) => r.json()).then((d) => d.content ?? '')
+      )
+    )
+    return results
+      .map((r, i) => r.status === 'fulfilled' ? `### ${proj.contextFiles![i].name}\n${r.value}` : '')
+      .filter(Boolean)
+      .join('\n\n---\n\n')
+  }, [])
 
   const triggerAutoProofread = useCallback(async (text: string, forceRefresh = false) => {
     if (!apiKeys.gemini || !text.trim()) return
@@ -156,7 +217,12 @@ export default function Home() {
     setTranscriptionProofreadResult(null)
     setProofreadError(null)
     try {
-      const approvedNouns = globalNounStockRef.current.filter((n: DetectedNoun & { approved?: boolean }) => (n as any).approved !== false)
+      const approvedNouns = activeNounsRef.current.filter((n: any) => n.approved !== false)
+      // Merge project context + reference file content
+      const fileContent = await loadProjectContextFileContent()
+      const baseContext = transcriptionContextRef.current || autoDetectedContextRef.current || ''
+      const fullContext = [baseContext, fileContent].filter(Boolean).join('\n\n---\n\n') || undefined
+
       const res = await fetch('/api/transcription-proofread', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -165,16 +231,67 @@ export default function Home() {
           language: 'ja',
           globalNouns: approvedNouns.map((n) => ({ term: n.term, reading: n.reading, category: n.category })),
           apiKey: apiKeys.gemini,
-          model: aiPreferences.geminiModel || 'gemini-3-flash-preview',
-          // 手動コンテキストを優先、なければ前回の自動検出を使用
-          context: transcriptionContextRef.current || autoDetectedContextRef.current || undefined,
+          model: aiPreferences.geminiModel || 'gemini-2.5-flash',
+          context: fullContext,
         }),
       })
       const data: TranscriptionProofreadResult & { error?: string } = await res.json()
       if (data.success) {
-        // 自動検出コンテキストを保存（次回呼び出しで精度向上に使う）
-        if (data.detectedContext && !transcriptionContextRef.current) {
-          setAutoDetectedContext(data.detectedContext)
+        // Auto-detected context: update session + project
+        if (data.detectedContext) {
+          if (!transcriptionContextRef.current) {
+            setAutoDetectedContext(data.detectedContext)
+          }
+          // Store context on session
+          const sessId = currentSessionIdRef.current
+          if (sessId) updateSessionMeta(sessId, { autoContext: data.detectedContext })
+          // Auto-set project context if empty
+          const projId = activeProjectIdRef.current
+          if (projId) {
+            setSpeechProjects((prev) => {
+              const updated = prev.map((p) =>
+                p.id === projId && !p.context
+                  ? { ...p, context: data.detectedContext! }
+                  : p
+              )
+              saveSpeechProjects(updated)
+              return updated
+            })
+          }
+        }
+        // Auto-approve high-confidence NEW nouns into project/standalone dictionary
+        if (data.detectedNouns) {
+          const autoApprove = data.detectedNouns.filter(
+            (n) => n.isNew && n.confidence >= AUTO_APPROVE_THRESHOLD
+          )
+          if (autoApprove.length > 0) {
+            const projId = activeProjectIdRef.current
+            if (projId) {
+              setSpeechProjects((prev) => {
+                const updated = prev.map((p) => {
+                  if (p.id !== projId) return p
+                  const newNouns = autoApprove.filter(
+                    (n) => !p.nouns.some((e) => e.term.toLowerCase() === n.term.toLowerCase())
+                  )
+                  if (newNouns.length === 0) return p
+                  const next = { ...p, nouns: [...p.nouns, ...newNouns.map((n) => ({ ...n, approved: true }))] }
+                  saveSpeechProjects(prev.map((pp) => pp.id === projId ? next : pp))
+                  return next
+                })
+                return updated
+              })
+            } else {
+              setStandaloneNouns((prev) => {
+                const newNouns = autoApprove.filter(
+                  (n) => !prev.some((e) => e.term.toLowerCase() === n.term.toLowerCase())
+                )
+                if (newNouns.length === 0) return prev
+                const updated = [...prev, ...newNouns.map((n) => ({ ...n, approved: true }))]
+                try { localStorage.setItem(STANDALONE_NOUNS_KEY, JSON.stringify(updated)) } catch {}
+                return updated
+              })
+            }
+          }
         }
         setTranscriptionProofreadResult(data)
         setProofreadCache(text, data)
@@ -203,8 +320,25 @@ export default function Home() {
     }
   }
 
-  const handleTranscriptionComplete = (result: TranscriptionResultType, fileName: string, service: string) => {
-    const meta = { fileName, service, isNew: true }
+  const handleTranscriptionComplete = (result: TranscriptionResultType, fileName: string, service: string, projectId?: string) => {
+    // Update active project
+    const newProjectId = projectId ?? null
+    setActiveProjectId(newProjectId)
+    // If project has context, use it; otherwise clear auto-detected
+    if (newProjectId) {
+      const proj = speechProjects.find((p) => p.id === newProjectId)
+      if (proj?.context) {
+        setAutoDetectedContext(proj.context)
+      } else {
+        setAutoDetectedContext('')
+      }
+    } else {
+      setAutoDetectedContext('')
+    }
+
+    const sessionId = `local_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
+    setCurrentSessionId(sessionId)
+    const meta = { fileName, service, isNew: true, sessionId, projectId: newProjectId }
     setTranscriptionResult(result)
     setTranscriptionMeta(meta)
     setResultQueue((prev) => {
@@ -213,10 +347,10 @@ export default function Home() {
     })
     setSelectedQueueIndex(0)
 
-    // Auto-save to localStorage history (no project/DB required)
+    // Auto-save to localStorage history
     try {
       const item = {
-        id: `local_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        id: sessionId,
         fileName,
         service,
         language: result.language,
@@ -224,6 +358,8 @@ export default function Home() {
         segments: result.segments,
         words: result.words,
         createdAt: new Date().toISOString(),
+        projectId: newProjectId,
+        autoContext: '',
       }
       const stored = localStorage.getItem(RECENT_TRANSCRIPTIONS_KEY)
       const existing = stored ? JSON.parse(stored) : []
@@ -257,19 +393,25 @@ export default function Home() {
     setSelectedQueueIndex(0)
     setActiveTab('transcription')
     setProofreadError(null)
+    // Restore project context
+    const projId = meta?.projectId ?? null
+    setActiveProjectId(projId)
+    setCurrentSessionId(meta?.sessionId ?? null)
+    if (projId) {
+      const proj = speechProjectsRef.current.find((p: SpeechProject) => p.id === projId)
+      if (proj?.context) setAutoDetectedContext(proj.context)
+    } else if (meta?.autoContext) {
+      setAutoDetectedContext(meta.autoContext)
+    }
   }, [])
 
   // 履歴から校正結果をロード（校正タブ廃止のため書き起こしタブに切り替え）
-  const handleLoadProofreading = useCallback((data: ProofreadingResult, meta?: any) => {
+  const handleLoadProofreading = useCallback((_data: ProofreadingResult, _meta?: any) => {
     setActiveTab('transcription')
   }, [])
 
   // 履歴から字幕をロード
-  const handleLoadSubtitles = useCallback((data: any) => {
-    // SubtitleGeneratorに渡すためのデータ形式に変換
-    if (data.srtContent) {
-      setSubtitleContent({ srt: data.srtContent, vtt: data.vttContent || '' })
-    }
+  const handleLoadSubtitles = useCallback((_data: any) => {
     setActiveTab('subtitle-generation')
   }, [])
 
@@ -277,11 +419,6 @@ export default function Home() {
   const handleLoadMovieProject = useCallback((projectId: string) => {
     setMovieProjectIdToLoad(projectId)
     setActiveTab('movie-subtitle')
-  }, [])
-
-  // 映画字幕プロジェクト読み込み完了時のコールバック
-  const handleMovieProjectLoaded = useCallback(() => {
-    setMovieProjectIdToLoad(null)
   }, [])
 
   const handleStartSubtitleGeneration = () => {
@@ -292,26 +429,17 @@ export default function Home() {
   }
 
   const handleNounApproved = useCallback((noun: DetectedNoun) => {
-    setGlobalNounStock((prev) => {
-      const exists = prev.some(
-        (n) => n.term.toLowerCase() === noun.term.toLowerCase()
-      )
-      if (exists) return prev
-      const updated = [...prev, { ...noun, approved: true } as any]
-      try {
-        localStorage.setItem(GLOBAL_NOUN_STOCK_KEY, JSON.stringify(updated))
-      } catch {}
-      return updated
+    updateActiveNouns((prev) => {
+      if (prev.some((n) => n.term.toLowerCase() === noun.term.toLowerCase())) return prev
+      return [...prev, { ...noun, approved: true } as any]
     })
-
-    // 辞書（先頭プロジェクト）にも自動登録
+    // Also sync to DB dictionary
     try {
       const dicts = storage.getDictionaries()
       if (dicts.length > 0) {
         const dictId = dicts[0].id
         const entries = storage.getDictionaryEntries(dictId)
-        const exists = entries.some((e) => e.term.toLowerCase() === noun.term.toLowerCase())
-        if (!exists) {
+        if (!entries.some((e) => e.term.toLowerCase() === noun.term.toLowerCase())) {
           const newEntry: DictionaryEntry = {
             id: `noun_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
             term: noun.term,
@@ -319,82 +447,45 @@ export default function Home() {
             dictionaryId: dictId,
           }
           storage.setDictionaryEntries(dictId, [...entries, newEntry])
-          setDictionaryRefreshKey((k) => k + 1)
+          setHistoryRefreshKey((k: number) => k + 1)
         }
       }
     } catch {}
-  }, [])
+  }, [updateActiveNouns])
 
   const handleNounRejected = useCallback((term: string) => {
-    // rejected nouns: mark as approved:false so they don't resurface
-    setGlobalNounStock((prev) => {
-      const exists = prev.some((n) => n.term.toLowerCase() === term.toLowerCase())
-      if (exists) return prev
-      // We just skip adding it — rejection means "don't stock"
-      return prev
-    })
-  }, [])
+    updateActiveNouns((prev) => prev.filter((n) => n.term.toLowerCase() !== term.toLowerCase()))
+  }, [updateActiveNouns])
 
   const handleNounsMerged = useCallback((canonical: string, aliases: string[]) => {
-    setGlobalNounStock((prev) => {
-      const updated = prev.map((n) => {
-        if (aliases.includes(n.term)) {
-          return { ...n, term: canonical }
-        }
-        return n
-      })
-      // deduplicate after merge
+    updateActiveNouns((prev) => {
+      const mapped = prev.map((n) => aliases.includes(n.term) ? { ...n, term: canonical } : n)
       const seen = new Set<string>()
-      const deduped = updated.filter((n) => {
+      return mapped.filter((n) => {
         if (seen.has(n.term.toLowerCase())) return false
         seen.add(n.term.toLowerCase())
         return true
       })
-      try {
-        localStorage.setItem(GLOBAL_NOUN_STOCK_KEY, JSON.stringify(deduped))
-      } catch {}
-      return deduped
     })
-  }, [])
+  }, [updateActiveNouns])
 
   const handleNounUpdated = useCallback((oldTerm: string, newTerm: string, reading?: string) => {
-    setGlobalNounStock((prev) => {
-      const updated = prev.map((n) =>
-        n.term.toLowerCase() === oldTerm.toLowerCase()
-          ? { ...n, term: newTerm, reading }
-          : n
-      )
-      try { localStorage.setItem(GLOBAL_NOUN_STOCK_KEY, JSON.stringify(updated)) } catch {}
-      return updated
-    })
-  }, [])
-
-  const handleManualNounAdd = useCallback((term: string, reading?: string) => {
-    handleNounApproved({
-      term,
-      reading,
-      category: 'other',
-      context: '',
-      confidence: 1.0,
-      isNew: true,
-    })
-  }, [handleNounApproved])
-
-  const handleConfidenceThresholdChange = useCallback((v: number) => {
-    setConfidenceThreshold(v)
-    localStorage.setItem(CONFIDENCE_THRESHOLD_KEY, String(v))
-  }, [])
+    updateActiveNouns((prev) =>
+      prev.map((n) => n.term.toLowerCase() === oldTerm.toLowerCase() ? { ...n, term: newTerm, reading } : n)
+    )
+  }, [updateActiveNouns])
 
   const pendingNouns = useMemo(() => {
     if (!transcriptionProofreadResult) return []
+    // Pending = new nouns below auto-approve threshold (for manual review)
     return transcriptionProofreadResult.detectedNouns.filter(
-      (n) => n.confidence < confidenceThreshold && n.isNew
+      (n) => n.isNew && n.confidence >= PENDING_NOUN_THRESHOLD && n.confidence < AUTO_APPROVE_THRESHOLD
     )
-  }, [transcriptionProofreadResult, confidenceThreshold])
+  }, [transcriptionProofreadResult])
 
-  // Highlight = library words + newly detected nouns (library words show even after approval)
+  // Highlight = project library words + newly detected nouns
   const highlightNouns = useMemo(() => {
-    const approvedLib = globalNounStock
+    const approvedLib = activeNouns
       .filter((n: any) => n.approved !== false)
       .map((n) => ({ ...n, confidence: (n as any).confidence ?? 1.0, isNew: false as const }))
     const newDetected = transcriptionProofreadResult
@@ -403,7 +494,7 @@ export default function Home() {
     const seen = new Set(newDetected.map((n) => n.term.toLowerCase()))
     const libOnly = approvedLib.filter((n) => !seen.has(n.term.toLowerCase()))
     return [...newDetected, ...libOnly]
-  }, [transcriptionProofreadResult, globalNounStock])
+  }, [transcriptionProofreadResult, activeNouns])
 
   // Stable ref so useEffect only re-fires when transcriptionResult.text changes
   const triggerAutoProofreadRef = useRef(triggerAutoProofread)
@@ -426,14 +517,117 @@ export default function Home() {
     }
   }, [transcriptionResult, triggerAutoProofread])
 
+  const handleBulkSubtitleGenerate = useCallback(async (sessions: { id: string; fileName: string; text: string; segments?: any[]; words?: any[] }[]) => {
+    const withWords = sessions.filter((s) => s.words && s.words.length > 0)
+    const withSegs  = sessions.filter((s) => (!s.words || s.words.length === 0) && s.segments && s.segments.length > 0)
+
+    // Items that have word-level data → call /api/subtitles/generate for best quality
+    for (const session of withWords) {
+      const base = session.fileName.replace(/\.[^.]+$/, '')
+      try {
+        const res = await fetch('/api/subtitles/generate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            words: session.words,
+            settings: {
+              language: 'ja',
+              maxCharsPerLine: subtitleSettings.ja?.maxCharsPerLine ?? 20,
+              maxLines: subtitleSettings.ja?.maxLines ?? 2,
+              lineBreakService: 'none',
+            },
+          }),
+        })
+        if (res.ok) {
+          const data = await res.json()
+          const srtLines = (data.entries ?? []).map((e: any, i: number) => {
+            const fmt = (s: number) => {
+              const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = Math.floor(s % 60), ms = Math.round((s % 1) * 1000)
+              return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')},${String(ms).padStart(3,'0')}`
+            }
+            return `${i + 1}\n${fmt(e.startTime)} --> ${fmt(e.endTime)}\n${e.text}\n`
+          }).join('\n')
+          const blob = new Blob([srtLines], { type: 'text/plain;charset=utf-8' })
+          const url = URL.createObjectURL(blob)
+          const a = document.createElement('a'); a.href = url; a.download = `${base}.srt`
+          document.body.appendChild(a); a.click(); document.body.removeChild(a)
+          setTimeout(() => URL.revokeObjectURL(url), 1000)
+        }
+      } catch (e) { console.error('[bulk subtitle]', session.fileName, e) }
+      await new Promise((r) => setTimeout(r, 400))
+    }
+
+    // Items with only segments → generate SRT directly
+    for (const session of withSegs) {
+      const base = session.fileName.replace(/\.[^.]+$/, '')
+      const fmt = (s: number) => {
+        const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = Math.floor(s % 60), ms = Math.round((s % 1) * 1000)
+        return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')},${String(ms).padStart(3,'0')}`
+      }
+      const srt = (session.segments || []).map((seg: any, i: number) =>
+        `${i + 1}\n${fmt(seg.start)} --> ${fmt(seg.end)}\n${(seg.text || '').trim()}\n`
+      ).join('\n')
+      const blob = new Blob([srt], { type: 'text/plain;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a'); a.href = url; a.download = `${base}.srt`
+      document.body.appendChild(a); a.click(); document.body.removeChild(a)
+      setTimeout(() => URL.revokeObjectURL(url), 1000)
+      await new Promise((r) => setTimeout(r, 300))
+    }
+  }, [subtitleSettings])
+
+  // Extract proper nouns from context MD files and add to project dictionary
+  const handleExtractNounsFromFiles = useCallback(async (project: SpeechProject) => {
+    if (!apiKeys.gemini || !project.contextFiles?.length) return
+    const fileContent = await (async () => {
+      const results = await Promise.allSettled(
+        project.contextFiles!.map((f) =>
+          fetch(`/api/read-file?path=${encodeURIComponent(f.path)}`).then((r) => r.json()).then((d) => d.content ?? '')
+        )
+      )
+      return results
+        .map((r, i) => r.status === 'fulfilled' ? `### ${project.contextFiles![i].name}\n${(r as any).value}` : '')
+        .filter(Boolean).join('\n\n')
+    })()
+    if (!fileContent.trim()) return
+
+    try {
+      const res = await fetch('/api/transcription-proofread', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text: fileContent,
+          language: 'ja',
+          globalNouns: project.nouns.map((n) => ({ term: n.term, reading: n.reading, category: n.category })),
+          apiKey: apiKeys.gemini,
+          model: aiPreferences.geminiModel || 'gemini-2.5-flash',
+          context: `これはプロジェクト「${project.name}」の参照ドキュメント。固有名詞を最大限抽出せよ。`,
+        }),
+      })
+      const data = await res.json()
+      if (data.success && data.detectedNouns?.length) {
+        setSpeechProjects((prev) => {
+          const updated = prev.map((p) => {
+            if (p.id !== project.id) return p
+            const newNouns: DetectedNoun[] = data.detectedNouns.filter(
+              (n: DetectedNoun) => !p.nouns.some((e) => e.term.toLowerCase() === n.term.toLowerCase())
+            ).map((n: DetectedNoun) => ({ ...n, approved: true }))
+            if (newNouns.length === 0) return p
+            return { ...p, nouns: [...p.nouns, ...newNouns] }
+          })
+          saveSpeechProjects(updated)
+          return updated
+        })
+      }
+    } catch (e) { console.error('[extract-nouns-from-files]', e) }
+  }, [apiKeys.gemini, aiPreferences.geminiModel])
+
   const handleTabClick = (tab: 'transcription' | 'subtitle-generation' | 'movie-subtitle') => {
     setNavigatedFromTranscription(false)
     setActiveTab(tab)
   }
 
   const handleSubtitleGenerated = (srt: string, vtt: string) => {
-    setSubtitleContent({ srt, vtt })
-
     // Auto-save subtitles to disk if outputDir configured
     const date = new Date().toISOString().slice(0, 10)
     const ts = generateTimestamp()
@@ -453,6 +647,12 @@ export default function Home() {
         onLoadMovieProject={handleLoadMovieProject}
         currentProjectId={currentProjectId}
         refreshKey={historyRefreshKey}
+        speechProjects={speechProjects}
+        onSpeechProjectsChange={(projects) => { setSpeechProjects(projects); saveSpeechProjects(projects) }}
+        activeProjectId={activeProjectId}
+        onProjectSelect={(id) => setActiveProjectId(id)}
+        onBulkSubtitleGenerate={handleBulkSubtitleGenerate}
+        onExtractNounsFromFiles={handleExtractNounsFromFiles}
       />
 
       <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
@@ -546,50 +746,21 @@ export default function Home() {
                 onTranscriptionComplete={handleTranscriptionComplete}
                 isTranscribing={isTranscribing}
                 setIsTranscribing={setIsTranscribing}
+                speechProjects={speechProjects}
+                defaultProjectId={activeProjectId}
               />
 
-              {/* 分析コンテキスト入力 */}
-              <div className="card" style={{ padding: '0.75rem 1rem' }}>
-                <button
-                  onClick={() => setShowContextInput((v) => !v)}
-                  style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', background: 'none', border: 'none', cursor: 'pointer', width: '100%', textAlign: 'left', padding: 0 }}
-                >
-                  <span style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-muted)' }}>
-                    {showContextInput ? '▾' : '▸'} 分析コンテキスト（任意）
+              {/* 分析コンテキスト（常時表示） */}
+              {(activeProject || autoDetectedContext) && (
+                <div className="card" style={{ padding: '0.6rem 0.875rem', display: 'flex', gap: '0.5rem', alignItems: 'flex-start' }}>
+                  <span style={{ fontSize: '10px', color: 'var(--accent)', fontWeight: 700, paddingTop: '1px', flexShrink: 0 }}>
+                    {activeProject ? `📁 ${activeProject.name}` : '💬 セッション'}
                   </span>
-                  {transcriptionContext.trim() && (
-                    <span style={{ fontSize: '9px', padding: '1px 0.3rem', background: 'rgba(99,102,241,0.15)', color: '#818cf8', borderRadius: '3px', fontWeight: 700 }}>
-                      設定済み
-                    </span>
-                  )}
-                </button>
-                {showContextInput && (
-                  <div style={{ marginTop: '0.5rem' }}>
-                    <textarea
-                      value={transcriptionContext}
-                      onChange={(e) => setTranscriptionContext(e.target.value)}
-                      placeholder="例：映画監督インタビュー。タランティーノ監督、スパイダーマンシリーズ、ZFILMS制作会社について話している"
-                      rows={3}
-                      style={{
-                        width: '100%',
-                        padding: '0.5rem 0.75rem',
-                        fontSize: '12px',
-                        background: 'var(--bg)',
-                        color: 'var(--text)',
-                        border: '1px solid var(--border)',
-                        borderRadius: '6px',
-                        resize: 'vertical',
-                        fontFamily: 'inherit',
-                        lineHeight: 1.6,
-                        boxSizing: 'border-box',
-                      }}
-                    />
-                    <div style={{ fontSize: '10px', color: 'var(--text-muted)', marginTop: '0.25rem' }}>
-                      このコンテキストはGeminiの固有名詞検出精度向上に使用されます。「再分析」で反映。
-                    </div>
-                  </div>
-                )}
-              </div>
+                  <span style={{ fontSize: '11px', color: 'var(--text-muted)', flex: 1, lineHeight: 1.5 }}>
+                    {activeProject?.context || autoDetectedContext || '（コンテキスト生成中...）'}
+                  </span>
+                </div>
+              )}
 
               {/* 複数ファイル処理時のスイッチャー */}
               {resultQueue.length > 1 && (
@@ -641,18 +812,19 @@ export default function Home() {
                 <div className="animate-fade-in">
                   <TranscriptionResult
                     result={transcriptionResult}
+                    meta={transcriptionMeta}
                     onStartSubtitleGeneration={handleStartSubtitleGeneration}
                     onRequestProofread={handleRequestProofread}
                     proofreadResult={transcriptionProofreadResult}
                     isProofreading={isAutoProofreading}
                     proofreadError={proofreadError}
-                    globalNouns={globalNounStock}
+                    globalNouns={activeNouns}
                     onNounApproved={handleNounApproved}
                     onNounRejected={handleNounRejected}
                     onNounsMerged={handleNounsMerged}
                     highlightTerms={highlightNouns}
                     onNounClickedInText={handleNounApproved}
-                    screeningModel={aiPreferences.geminiModel || 'gemini-3-flash-preview'}
+                    screeningModel={aiPreferences.geminiModel || 'gemini-2.5-flash'}
                     autoDetectedContext={autoDetectedContext}
                   />
                 </div>
@@ -671,6 +843,8 @@ export default function Home() {
                 aiPreferences={aiPreferences}
                 onSubtitleGenerated={handleSubtitleGenerated}
                 navigatedFromTranscription={navigatedFromTranscription}
+                proofreadResult={transcriptionProofreadResult}
+                autoDetectedContext={activeProject?.context || autoDetectedContext || undefined}
               />
             </div>
           )}
@@ -692,15 +866,13 @@ export default function Home() {
 
       {/* 右: 辞書パネル */}
       <DictionaryPanel
-        globalNouns={globalNounStock}
+        globalNouns={activeNouns}
         onRemoveGlobalNoun={handleNounRejected}
         pendingNouns={pendingNouns}
-        confidenceThreshold={confidenceThreshold}
-        onConfidenceThresholdChange={handleConfidenceThresholdChange}
         onApprovePendingNoun={handleNounApproved}
         onRejectPendingNoun={handleNounRejected}
-        onManualAddNoun={handleManualNounAdd}
         onUpdateGlobalNoun={handleNounUpdated}
+        activeProjectName={activeProject?.name ?? null}
       />
 
       {showSettings && (
